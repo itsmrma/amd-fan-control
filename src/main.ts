@@ -52,7 +52,7 @@ function fields() {
   el('points').replaceChildren();
   draft.curve.forEach((p, i) => {
     const group = document.createElement('div');
-    const label = document.createElement('label'); label.textContent = `Punto ${i + 1}`;
+    const label = document.createElement('label'); label.textContent = `Punto ${i + 1} · °C / %`;
     const box = document.createElement('div'); box.className = 'point-fields';
     for (const key of ['temperature', 'speed'] as const) {
       const field = document.createElement('input'); field.type = 'number'; field.value = String(p[key]);
@@ -66,12 +66,13 @@ function fields() {
   });
 }
 
-function changed() { dirty = true; localError = null; controls(); }
+function changed() { dirty = true; localError = null; el('settings-feedback').textContent = 'Modifiche non salvate.'; controls(); }
 function stale() { return !state?.sampled_at_ms || Date.now() - state.sampled_at_ms > Math.max(12000, state.config.polling_ms * 3); }
 function controls() {
   for (const field of el('points').querySelectorAll('input')) field.disabled = pending || !!state?.manual;
   const writable = !!state?.ready && !!state.selected && !!state.curve_info?.supported;
   el<HTMLButtonElement>('save').disabled = pending || !draft || !!state?.manual || !dirty;
+  el<HTMLButtonElement>('save-settings').disabled = pending || !draft || !!state?.manual || !dirty;
   el<HTMLButtonElement>('apply').disabled = pending || !writable || dirty || !!state?.manual || !state?.sample || stale();
   el<HTMLButtonElement>('automatic').disabled = pending || !writable;
   el<HTMLSelectElement>('adapter').disabled = pending || !!state?.manual;
@@ -118,17 +119,21 @@ async function command(name: string, args?: Record<string, unknown>, success?: s
   finally { pending = false; controls(); if (state) for (const field of el('points').querySelectorAll('input')) field.disabled = state.manual; }
 }
 
-el('save').addEventListener('click', async () => {
+async function saveDraft() {
   if (!draft) return;
   pending = true; controls();
+  el('settings-feedback').textContent = 'Salvataggio…';
   try {
     await invoke('save_config', { config: draft });
     dirty = false; localError = null;
     update(await invoke<Status>('get_status'));
     el('feedback').textContent = 'Configurazione salvata. Puoi applicare la curva.';
-  } catch (e) { localError = String(e); }
+    el('settings-feedback').textContent = 'Impostazioni salvate.';
+  } catch (e) { localError = String(e); el('settings-feedback').textContent = `Salvataggio non riuscito: ${e}`; }
   finally { pending = false; controls(); }
-});
+}
+el('save').addEventListener('click', saveDraft);
+el('save-settings').addEventListener('click', saveDraft);
 el('apply').addEventListener('click', () => command('apply_curve'));
 el('automatic').addEventListener('click', () => command('restore_automatic'));
 el('adapter').addEventListener('change', () => { if (draft) { draft.adapter_id = el<HTMLSelectElement>('adapter').value || null; changed(); } });

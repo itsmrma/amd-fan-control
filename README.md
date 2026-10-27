@@ -4,6 +4,8 @@
 
 <p align="center"><a href="https://github.com/itsmrma/amd-fan-control/releases">Scarica la release</a> · <a href="docs/ARCHITECTURE.md">Architettura</a> · <a href="docs/TESTING.md">Primi test</a></p>
 
+![Interfaccia alpha con telemetria della RX 5600 XT](assets/screenshot.png)
+
 ## Stato: 0.1 alpha
 
 Questa prima versione usa **Overdrive8 e una curva nativa a cinque punti**.

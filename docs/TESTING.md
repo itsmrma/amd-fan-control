@@ -70,7 +70,7 @@ controlli ufficiali e riavviare il sistema se necessario.
 5. Applica di nuovo, chiudi la finestra: l'icona tray deve restare e aggiornare il tooltip.
 6. Apri dalla tray ed esci dal relativo menu: controlla il ritorno ai default.
 7. Verifica login autostart e avvio nella tray. Le due opzioni sono indipendenti;
-   l'avvio nella tray va salvato con Salva curva. Non viene riattivata automaticamente la curva.
+   l'avvio nella tray va salvato con Salva impostazioni. Non viene riattivata automaticamente la curva.
 8. Solo dopo queste prove valuta sospensione/ripresa, reset driver e processo
    terminato forzatamente, verificando cosa rimane effettivamente nel driver.
 

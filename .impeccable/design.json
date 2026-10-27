@@ -1,0 +1,62 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-27T14:37:22.0268044Z",
+  "title": "Design System: AMD Fan Control",
+  "extensions": {
+    "motion": [
+      {
+        "name": "button-hover",
+        "value": "filter 100ms ease-out",
+        "purpose": "Button hover darkening only under prefers-reduced-motion: no-preference."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "compact",
+        "value": "700px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Apply curve button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Filled manual-curve action with implemented hover, focus, and disabled states.",
+      "html": "<button class=\"ds-primary\">Applica curva manuale</button>",
+      "css": ".ds-primary{font:600 13px \"Segoe UI\",system-ui,sans-serif;border:1px solid transparent;border-radius:9px;background:#a82326;color:#fff;padding:12px 16px;min-height:44px;cursor:pointer}.ds-primary:hover{filter:brightness(.92)}.ds-primary:focus-visible{outline:3px solid var(--focus,#a82326);outline-offset:3px}.ds-primary:disabled{opacity:.45;cursor:default;filter:none}@media(prefers-color-scheme:dark){.ds-primary:focus-visible{outline-color:var(--focus,#ffb3ac)}}@media(prefers-reduced-motion:no-preference){.ds-primary{transition:filter 100ms ease-out}}"
+    },
+    {
+      "name": "Save settings button",
+      "kind": "button",
+      "refersTo": "button-secondary-light",
+      "description": "Outlined settings save action; theme custom properties inherit from the app with matching appearance fallbacks for standalone preview.",
+      "html": "<button class=\"ds-secondary\">Salva impostazioni</button>",
+      "css": ".ds-secondary{font:600 13px \"Segoe UI\",system-ui,sans-serif;border:1px solid var(--line,#d9d2d0);border-radius:9px;background:var(--panel,#fff);color:var(--accent,#a82326);padding:12px 16px;min-height:44px;cursor:pointer}.ds-secondary:hover{filter:brightness(.92)}.ds-secondary:focus-visible{outline:3px solid var(--focus,#a82326);outline-offset:3px}.ds-secondary:disabled{opacity:.45;cursor:default;filter:none}@media(prefers-color-scheme:dark){.ds-secondary{border-color:var(--line,#494246);background:var(--panel,#202125);color:var(--accent,#ffb3ac)}.ds-secondary:focus-visible{outline-color:var(--focus,#ffb3ac)}}@media(prefers-reduced-motion:no-preference){.ds-secondary{transition:filter 100ms ease-out}}"
+    }
+  ],
+  "narrative": {
+    "northStar": "Clean, minimal Material-inspired desktop UI",
+    "overview": "The interface is a compact Windows Tauri utility with Italian labels, restrained color, familiar native typography, and a direct hierarchy from telemetry to curve editing. System light and dark appearance comes from the operating-system preference. An original SVG three-blade fan in `assets/icon.svg` supplies the product identity without additional imagery or downloaded fonts.\n\nThe implemented **Operate** surface keeps four readings, a five-point fan curve, numeric editing, explicit commands, and expandable settings in one window. Low resource use is a binding direction: vanilla TypeScript, native SVG, local assets, and no decorative animation. This document records `index.html`, `src/style.css`, and `src/main.ts`; visual review evidence covers the captured Windows dark desktop alpha. Light appearance and the narrow layout below are implemented CSS behavior, not claims of captured validation.",
+    "keyCharacteristics": [
+      "Compact desktop hierarchy with telemetry and curve immediately available.",
+      "System appearance, local Segoe UI typography, and one restrained red accent family.",
+      "Flat bordered surfaces, clear focus, and explicit save/apply feedback.",
+      "A lightweight SVG chart paired with keyboard-editable numeric fields."
+    ],
+    "rules": [],
+    "dos": [
+      "**Do** retain system light/dark behavior and the original local SVG fan mark.",
+      "**Do** keep the curve and telemetry readable within the compact Operate surface.",
+      "**Do** provide numeric keyboard alternatives for pointer editing and visible keyboard focus.",
+      "**Do** distinguish unsaved drafts, saved configuration, active manual control, and unavailable telemetry with explicit text.",
+      "**Do** preserve the dedicated settings save action and its nearby outcome feedback."
+    ],
+    "donts": [
+      "**Don't** add downloaded fonts, decorative imagery, or continuous decorative motion to this utility.",
+      "**Don't** replace the implemented flat borders with unsupported shadows or gradients.",
+      "**Don't** imply that the chart displays a separate saved curve when it displays only the draft.",
+      "**Don't** describe source-defined light or narrow styling as visually captured validation."
+    ]
+  }
+}
