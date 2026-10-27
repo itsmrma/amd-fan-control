@@ -10,7 +10,7 @@ I got tired of using MSI Afterburner, so I built a fan-control app for my own gr
 
 This is a personal project built around that card. **It is not a universal AMD fan controller, and I cannot guarantee it will work on other cards.** Even another RX 5600 XT can behave differently with a different board BIOS or driver.
 
-![AMD Fan Control interface preview; telemetry is unavailable in this browser capture](assets/screenshot.png)
+![AMD Fan Control interface preview with simulated telemetry from browser tests](assets/screenshot.png)
 
 ## Compatibility
 
@@ -33,6 +33,7 @@ Older GCN cards (Polaris/Vega), integrated graphics, laptop-controlled fans, and
 
 - Resizable SVG curve editor with dragging, keyboard adjustment, and separate temperature/fan-speed labels.
 - GPU edge temperature, junction/hotspot, fan RPM, and driver-reported speed percentage.
+- Choose **GPU temperature** (default), **Junction / hotspot**, or **Driver / firmware sensor** above the chart. The selection is saved with your curve.
 - A custom-curve switch: on applies your saved curve; off restores driver fan defaults, with driver readback verification.
 - Descriptive button labels and hover help, plus a labeled Zero RPM cutoff on the chart.
 - Optional **Zero RPM below a configurable curve-speed threshold**, initially **25%**.
@@ -57,11 +58,19 @@ Closing the window keeps the app in the tray. **Quit** from the tray menu attemp
 
 The app starts in monitoring mode with custom control off and never silently reapplies a curve. It does not reset existing GPU settings at startup. Configuration lives at `%APPDATA%\amd-fan-control\config.json`. Windows autostart takes effect immediately; other settings require **Save all changes**, which saves the whole draft including the curve.
 
+### Curve temperature
+
+**GPU temperature** uses the normal edge reading; **Junction / hotspot** uses that sensor explicitly. Profiles without a selection now default to GPU temperature; startup still leaves custom control off. A missing selected sensor blocks activation or stops active control with a restoration attempt. There is no silent substitution.
+
+These two modes interpolate the saved curve once per second, updating OD8 only when requested speed or Zero RPM changes. The native curve holds that speed across the normal firmware temperature range, retaining a final ramp to 100% at the driver's maximum curve temperature (capped at 100 °C). Firmware can raise speed in that final ramp. This avoids assuming which internal sensor the driver uses. Edge ≥90 °C and hotspot ≥105 °C safeguards remain active for either selection. New sensor-based writes and physical fan response require separate hardware validation.
+
+**Driver / firmware sensor** retains the previous behavior: the driver executes the five saved points using its internal sensor. Zero RPM uses the hotter available reading in this mode. If the driver rejects sensor-based control, restore defaults and select this mode.
+
 ### Zero RPM
 
 Enable **Allow fans to stop** and set **When curve speed is below**. The initial threshold is **25%**. Set the first point below that value, for example **40 °C / 20%**, so the curve enters the fan-stop region. Existing profiles keep Zero RPM disabled until you enable and save it.
 
-The threshold refers to **speed requested by the curve**, not measured fan percentage. The app interpolates a temperature cutoff, rounded down to whole degrees. To avoid cycling, it requests fan stop only when the hotter available sensor is more than 3 °C below that cutoff, and disables permission at the cutoff. The cutoff cannot exceed 60 °C. The dashed line marks this cutoff and the shaded region shows where fans may stop; both are explained below the chart. This policy applies only while custom control is on. The solid line remains the requested native curve.
+The threshold refers to **speed requested by the curve**, not measured fan percentage. The app interpolates a temperature cutoff, rounded down to whole degrees. It requests fan stop when the selected sensor is more than 3 °C below that cutoff, and disables permission at the cutoff. Firmware mode uses the hotter available reading. The cutoff cannot exceed 60 °C. The dashed line and shaded region show where fans may stop while custom control is on. The solid line shows your requested curve.
 
 The worker toggles native Zero RPM permission at polling intervals and verifies it. **This requests fan stop; it does not force electrical 0% PWM.** Firmware may keep the fans running because of temperature, power, or restart conditions. Confirm actual stopping through RPM; an enabled flag is not proof of 0 RPM. Unsupported drivers leave this option unavailable.
 
@@ -76,7 +85,7 @@ If the driver rejects a Zero RPM change with **ADL -8** (operation not supported
 - The worker attempts restoration at edge ≥90 °C or hotspot ≥105 °C, repeated telemetry failures, long polling stalls, and detected external changes. These are application safeguards, not official GPU limits.
 - No independent watchdog. Forced termination cannot clean up: the native curve and last Zero RPM flag may remain, while the software gate stops updating. Firmware still determines restart. Immediate restoration after crashes, driver resets, or sleep is not guaranteed.
 - Reported percentage is the driver's RPM/max-RPM ratio, not electrical PWM duty. Missing/stale sensors show an em dash.
-- Firmware controls native-curve execution and restart hysteresis. The software gate uses the hotter reported sensor, which may differ from the native curve's internal sensor.
+- Firmware retains native emergency escalation and restart conditions. Driver / firmware sensor mode does not expose which internal temperature drives its curve.
 
 ## Development
 

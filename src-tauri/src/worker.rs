@@ -1,8 +1,8 @@
 use anyhow::{bail, Context, Result};
 use fan_core::{
-    config::Config,
-    curve::native_points,
-    hardware::{Adapter, CurveInfo, GpuBackend, Sample},
+    config::{Config, TemperatureSource},
+    curve::{interpolate, native_points},
+    hardware::{speed_hold_points, Adapter, CurveInfo, GpuBackend, Sample},
 };
 use serde::Serialize;
 use std::{
@@ -189,7 +189,9 @@ fn update_zero_rpm(backend: &mut dyn GpuBackend, s: &mut Snapshot, sample: &Samp
     let desired = s.config.zero_rpm_requested(sample, active)?;
     if desired != active {
         let info = backend.curve_info()?;
-        if info.current.as_slice() != s.config.curve.as_slice() || info.zero_rpm_enabled != active {
+        if Some(info.current) != s.curve_info.as_ref().map(|i| i.current)
+            || info.zero_rpm_enabled != active
+        {
             bail!("Fan settings changed outside this app");
         }
         backend.set_zero_rpm(desired)?;
@@ -200,6 +202,50 @@ fn update_zero_rpm(backend: &mut dyn GpuBackend, s: &mut Snapshot, sample: &Samp
         s.curve_info = Some(info);
     }
     Ok(())
+}
+
+fn requested_speed(s: &Snapshot, sample: &Sample) -> Result<i32> {
+    let temperature = s.config.temperature_source.temperature(sample)?;
+    Ok(interpolate(&s.config.curve, f64::from(temperature)).ceil() as i32)
+}
+
+fn update_sensor_control(
+    backend: &mut dyn GpuBackend,
+    s: &mut Snapshot,
+    sample: &Sample,
+) -> Result<()> {
+    let expected = s
+        .curve_info
+        .as_ref()
+        .context("Fan control state unavailable")?;
+    let actual = backend.curve_info()?;
+    if actual.current != expected.current || actual.zero_rpm_enabled != expected.zero_rpm_enabled {
+        bail!("Fan settings changed outside this app");
+    }
+    let speed = requested_speed(s, sample)?;
+    let points = speed_hold_points(&actual, speed)?;
+    let zero_rpm = s
+        .config
+        .zero_rpm_requested(sample, actual.zero_rpm_enabled)?;
+    if actual.current != points || actual.zero_rpm_enabled != zero_rpm {
+        backend.apply_speed(speed, zero_rpm)?;
+        let info = backend.curve_info()?;
+        if info.current != points || info.zero_rpm_enabled != zero_rpm {
+            bail!("Driver did not retain the requested sensor-based fan settings");
+        }
+        s.curve_info = Some(info);
+    }
+    Ok(())
+}
+
+fn check_sensor_control(backend: &mut dyn GpuBackend, s: &mut Snapshot, sample: &Sample) {
+    if let Err(e) = update_sensor_control(backend, s, sample) {
+        s.error = Some(restore_after_failure(
+            backend, s,
+            "Sensor-based fan control stopped. Check the selected sensor, or select Driver / firmware sensor to use the previous control mode.",
+            Some(&format!("{e:#}")),
+        ));
+    }
 }
 
 fn check_zero_rpm(backend: &mut dyn GpuBackend, s: &mut Snapshot, sample: &Sample) {
@@ -251,12 +297,32 @@ fn handle(
             let points = native_points(&s.config.curve)?;
             validate_zero_rpm(s)?;
             let sample = backend.sample()?;
+            if sample.too_hot() {
+                bail!("GPU is too hot to start custom fan control");
+            }
+            let speed = if s.config.temperature_source == TemperatureSource::Firmware {
+                None
+            } else {
+                Some(requested_speed(s, &sample)?)
+            };
+            let expected = if let Some(speed) = speed {
+                speed_hold_points(&backend.curve_info()?, speed)?
+            } else {
+                points
+            };
             let zero_rpm = s.config.zero_rpm_requested(&sample, false)?;
             s.manual = true;
-            match backend
-                .apply_native_curve(&points, zero_rpm)
-                .and_then(|_| backend.curve_info())
-            {
+            let result = if let Some(speed) = speed {
+                backend.apply_speed(speed, zero_rpm)
+            } else {
+                backend.apply_native_curve(&points, zero_rpm)
+            };
+            match result.and_then(|_| backend.curve_info()).and_then(|info| {
+                if info.current != expected || info.zero_rpm_enabled != zero_rpm {
+                    bail!("Driver did not retain the requested fan settings");
+                }
+                Ok(info)
+            }) {
                 Ok(info) => s.curve_info = Some(info),
                 Err(e) => {
                     bail!(
@@ -320,6 +386,7 @@ fn run(
                 if stop {
                     return Ok(());
                 }
+                deadline = Instant::now();
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
             Err(mpsc::RecvTimeoutError::Timeout) => {
@@ -333,7 +400,15 @@ fn run(
                     ));
                 }
                 last_tick = now;
-                deadline = now + Duration::from_millis(s.config.polling_ms);
+                // Selected-sensor control has a one-second control clock even
+                // when a slower monitoring refresh interval is configured.
+                let interval =
+                    if s.manual && s.config.temperature_source != TemperatureSource::Firmware {
+                        s.config.polling_ms.min(1000)
+                    } else {
+                        s.config.polling_ms
+                    };
+                deadline = now + Duration::from_millis(interval);
                 if s.selected.is_none() {
                     continue;
                 }
@@ -348,7 +423,9 @@ fn run(
                                 None,
                             ));
                         }
-                        if s.manual {
+                        if s.manual && s.config.temperature_source != TemperatureSource::Firmware {
+                            check_sensor_control(backend.as_mut(), &mut s, &sample);
+                        } else if s.manual {
                             check_zero_rpm(backend.as_mut(), &mut s, &sample);
                         }
                         s.sample = Some(sample);
@@ -374,10 +451,13 @@ fn run(
                 }
                 ticks += 1;
                 // Detect an external tuning tool or driver reset; do not fight another controller.
-                if s.manual && ticks.is_multiple_of(4) {
+                if s.manual
+                    && s.config.temperature_source == TemperatureSource::Firmware
+                    && ticks.is_multiple_of(4)
+                {
                     let info = backend.curve_info();
                     if !info.as_ref().is_ok_and(|i| {
-                        i.current.as_slice() == s.config.curve.as_slice()
+                        Some(i.current) == s.curve_info.as_ref().map(|info| info.current)
                             && i.zero_rpm_enabled
                                 == s.curve_info
                                     .as_ref()
@@ -452,7 +532,10 @@ mod tests {
     }
     fn snapshot() -> Snapshot {
         Snapshot {
-            config: Config::default(),
+            config: Config {
+                temperature_source: TemperatureSource::Firmware,
+                ..Config::default()
+            },
             adapters: vec![],
             selected: None,
             curve_info: None,
@@ -469,6 +552,8 @@ mod tests {
     struct GateGpu {
         info: CurveInfo,
         writes: Vec<bool>,
+        speed_writes: Vec<i32>,
+        sample: Sample,
         reject: bool,
         fail_write: bool,
         fail_reset: bool,
@@ -484,14 +569,22 @@ mod tests {
             Ok(self.info.clone())
         }
         fn sample(&mut self) -> Result<Sample> {
-            Ok(Sample {
-                edge_c: Some(38),
-                ..Sample::default()
-            })
+            Ok(self.sample.clone())
         }
         fn apply_native_curve(&mut self, points: &[Point; 5], zero_rpm: bool) -> Result<()> {
             self.info.current = *points;
             self.info.zero_rpm_enabled = zero_rpm;
+            Ok(())
+        }
+        fn apply_speed(&mut self, percent: i32, zero_rpm: bool) -> Result<()> {
+            self.speed_writes.push(percent);
+            if self.fail_write {
+                bail!("Sensor speed write (ADL -8)");
+            }
+            if !self.reject {
+                self.info.current = speed_hold_points(&self.info, percent)?;
+                self.info.zero_rpm_enabled = zero_rpm;
+            }
             Ok(())
         }
         fn set_zero_rpm(&mut self, enabled: bool) -> Result<()> {
@@ -528,12 +621,127 @@ mod tests {
             GateGpu {
                 info,
                 writes: vec![],
+                speed_writes: vec![],
+                sample: Sample {
+                    edge_c: Some(38),
+                    hotspot_c: Some(38),
+                    ..Sample::default()
+                },
                 reject: false,
                 fail_write: false,
                 fail_reset: false,
             },
             s,
         )
+    }
+    #[test]
+    fn sensor_selection_controls_speed_and_unchanged_speed_skips_writes() {
+        for (source, expected) in [
+            (TemperatureSource::Gpu, 40),
+            (TemperatureSource::Hotspot, 70),
+        ] {
+            let (mut gpu, mut s) = gate_setup();
+            s.config.temperature_source = source;
+            s.config.zero_rpm_below_percent = None;
+            gpu.sample.edge_c = Some(50);
+            gpu.sample.hotspot_c = Some(70);
+            handle(
+                Action::Apply,
+                &mut gpu,
+                std::path::Path::new("unused"),
+                &mut s,
+            )
+            .unwrap();
+            assert!(s.manual);
+            assert_eq!(gpu.speed_writes, [expected]);
+            assert_eq!(gpu.info.current[0].speed, expected);
+            assert_eq!(gpu.info.current[4].speed, 100);
+            let sample = gpu.sample.clone();
+            update_sensor_control(&mut gpu, &mut s, &sample).unwrap();
+            assert_eq!(gpu.speed_writes.len(), 1);
+            let warmer = Sample {
+                edge_c: Some(65),
+                hotspot_c: Some(75),
+                ..Sample::default()
+            };
+            update_sensor_control(&mut gpu, &mut s, &warmer).unwrap();
+            assert_eq!(
+                gpu.speed_writes[1],
+                if source == TemperatureSource::Gpu {
+                    60
+                } else {
+                    80
+                }
+            );
+            let missing = Sample {
+                edge_c: None,
+                hotspot_c: None,
+                ..Sample::default()
+            };
+            assert!(update_sensor_control(&mut gpu, &mut s, &missing).is_err());
+            gpu.info.current[0].speed += 1;
+            assert!(update_sensor_control(&mut gpu, &mut s, &warmer).is_err());
+            assert_eq!(gpu.speed_writes.len(), 2);
+        }
+    }
+    #[test]
+    fn sensor_control_failure_restores_defaults_or_keeps_recovery_available() {
+        for fail_reset in [false, true] {
+            for missing_sensor in [false, true] {
+                let (mut gpu, mut s) = gate_setup();
+                s.config.temperature_source = TemperatureSource::Gpu;
+                handle(
+                    Action::Apply,
+                    &mut gpu,
+                    std::path::Path::new("unused"),
+                    &mut s,
+                )
+                .unwrap();
+                gpu.fail_reset = fail_reset;
+                gpu.fail_write = !missing_sensor;
+                let sample = Sample {
+                    edge_c: if missing_sensor { None } else { Some(60) },
+                    hotspot_c: Some(70),
+                    ..Sample::default()
+                };
+                check_sensor_control(&mut gpu, &mut s, &sample);
+                assert_eq!(s.manual, fail_reset);
+                assert!(s.error.as_ref().unwrap().contains(if fail_reset {
+                    "Could not confirm"
+                } else {
+                    "Driver default fan settings restored"
+                }));
+            }
+        }
+        let (mut gpu, mut s) = gate_setup();
+        s.config.temperature_source = TemperatureSource::Gpu;
+        gpu.reject = true;
+        assert!(handle(
+            Action::Apply,
+            &mut gpu,
+            std::path::Path::new("unused"),
+            &mut s
+        )
+        .is_err());
+        assert!(!s.manual);
+    }
+    #[test]
+    fn missing_selected_sensor_prevents_apply_without_falling_back() {
+        let (mut gpu, mut s) = gate_setup();
+        s.config.temperature_source = TemperatureSource::Hotspot;
+        gpu.sample.hotspot_c = None;
+        let error = handle(
+            Action::Apply,
+            &mut gpu,
+            std::path::Path::new("unused"),
+            &mut s,
+        )
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("Hotspot temperature sensor unavailable"));
+        assert!(gpu.speed_writes.is_empty());
+        assert!(!s.manual);
     }
     #[test]
     fn zero_rpm_failure_explains_rejection_and_reports_restore_outcome() {

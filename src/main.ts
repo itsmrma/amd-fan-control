@@ -3,7 +3,7 @@ import { listen } from '@tauri-apps/api/event';
 import './style.css';
 
 type Point = { temperature: number; speed: number };
-type Config = { schema_version: number; adapter_id: string | null; curve: Point[]; polling_ms: number; start_in_tray: boolean; zero_rpm_below_percent: number | null };
+type Config = { schema_version: number; adapter_id: string | null; curve: Point[]; polling_ms: number; temperature_source: 'gpu' | 'hotspot' | 'firmware'; start_in_tray: boolean; zero_rpm_below_percent: number | null };
 type CurveInfo = { supported: boolean; zero_rpm_supported: boolean; zero_rpm_enabled: boolean; minimum: Point[]; maximum: Point[] };
 type Adapter = { id: string; name: string; od_version: number };
 type Sample = { edge_c: number | null; hotspot_c: number | null; rpm: number | null; speed_percent: number | null };
@@ -143,7 +143,17 @@ function zeroFeedback() {
     : !available ? 'Native Zero RPM is unavailable with this GPU/driver.'
     : draft?.zero_rpm_below_percent == null ? 'Disabled for custom control.'
     : stop === null ? 'Set a curve point below the threshold. The cutoff must be at or below 60 °C.'
-    : `Fans may stop below ${stop} °C. Stop permission returns below ${stop - 3} °C, using the hotter sensor.${state?.manual ? active ? ' Stop requested.' : ' Stop not requested.' : ''}`;
+    : `Fans may stop below ${stop} °C; re-arms below ${stop - 3} °C using ${draft?.temperature_source === 'gpu' ? 'GPU temperature' : draft?.temperature_source === 'hotspot' ? 'hotspot temperature' : 'the hotter sensor'}.${state?.manual ? active ? ' Stop requested.' : ' Stop not requested.' : ''}`;
+}
+function sensorFeedback() {
+  const source = draft?.temperature_source ?? 'gpu';
+  const label = source === 'gpu' ? 'GPU temperature' : source === 'hotspot' ? 'Hotspot temperature' : 'Firmware temperature';
+  el('temperature-axis').textContent = `${label} (°C)`;
+  chart.setAttribute('aria-label', `Fan curve: ${label.toLowerCase()} in degrees Celsius and fan speed in percent`);
+  el('sensor-help').textContent = source === 'firmware'
+    ? 'The driver chooses the curve sensor. Zero RPM uses the hotter reading.'
+    : `Uses ${source === 'gpu' ? 'GPU' : 'hotspot'} temperature. Updates every second; both thermal safeguards stay active.`;
+  el('temperature-source').title = el('sensor-help').textContent;
 }
 function changed() {
   dirty = true; localError = null;
@@ -156,14 +166,17 @@ function controls() {
   const locked = pending || !!state?.manual || !state?.ready;
   for (const field of el('points').querySelectorAll('input')) field.disabled = locked;
   const writable = !!state?.ready && !!state.selected && !!state.curve_info?.supported;
+  const source = draft?.temperature_source ?? 'gpu';
+  const sensorAvailable = source === 'firmware' || (source === 'gpu' ? state?.sample?.edge_c : state?.sample?.hotspot_c) != null;
   el<HTMLButtonElement>('save').disabled = locked || !draft || !dirty;
   el<HTMLButtonElement>('save-settings').disabled = locked || !draft || !dirty;
   input('custom-control').checked = !!state?.manual;
   // Turning off remains available even with missing telemetry or changed capabilities.
-  input('custom-control').disabled = pending || (state?.manual ? !state.ready || !state.selected : !writable || dirty || !state?.sample || stale());
+  input('custom-control').disabled = pending || (state?.manual ? !state.ready || !state.selected : !writable || dirty || !state?.sample || stale() || !sensorAvailable);
   el<HTMLButtonElement>('automatic').disabled = pending || !state?.ready || !state.selected;
   el<HTMLSelectElement>('adapter').disabled = locked;
   el<HTMLSelectElement>('polling').disabled = locked;
+  el<HTMLSelectElement>('temperature-source').disabled = locked;
   input('start-tray').disabled = locked;
   // An enabled option must remain removable even if the current driver loses support.
   input('zero-rpm').disabled = locked || (!state?.curve_info?.zero_rpm_supported && !input('zero-rpm').checked);
@@ -172,6 +185,7 @@ function controls() {
   el('mode').textContent = state?.manual ? 'Custom curve active' : state?.ready ? 'Custom control off' : 'Connecting';
   el('control-help').textContent = pending ? 'Updating fan control…' : state?.manual
     ? 'Your saved curve controls the fans. Turn off to restore driver defaults.'
+    : state?.sample && !sensorAvailable ? 'Selected temperature sensor unavailable. Choose another curve temperature.'
     : dirty ? 'Save your changes before turning on. Turn off restores driver defaults.'
     : 'On: saved curve · Off: driver defaults.';
   const error = localError ?? state?.error ?? (state?.sampled_at_ms && stale() ? 'GPU readings are out of date. Use driver defaults, then restart the app.' : null);
@@ -179,6 +193,7 @@ function controls() {
   el('error').hidden = !error; el('error-message').textContent = message;
   el('error-details').hidden = !details; el('error-detail-text').textContent = details ?? '';
   zeroFeedback();
+  sensorFeedback();
 }
 
 function update(s: Status) {
@@ -186,6 +201,8 @@ function update(s: Status) {
   if (!draft) {
     draft = structuredClone(s.config);
     draft.zero_rpm_below_percent ??= null;
+    draft.temperature_source ??= 'gpu';
+    el<HTMLSelectElement>('temperature-source').value = draft.temperature_source;
     el<HTMLSelectElement>('polling').value = String(draft.polling_ms);
     input('start-tray').checked = draft.start_in_tray;
     input('zero-rpm').checked = draft.zero_rpm_below_percent !== null;
@@ -246,6 +263,11 @@ el('automatic').addEventListener('click', async () => {
 });
 el('adapter').addEventListener('change', () => { if (draft) { draft.adapter_id = el<HTMLSelectElement>('adapter').value || null; changed(); } });
 el('polling').addEventListener('change', () => { if (draft) { draft.polling_ms = Number(el<HTMLSelectElement>('polling').value); changed(); } });
+el('temperature-source').addEventListener('change', () => {
+  if (!draft) return;
+  draft.temperature_source = el<HTMLSelectElement>('temperature-source').value as Config['temperature_source'];
+  changed();
+});
 input('start-tray').addEventListener('change', () => { if (draft) { draft.start_in_tray = input('start-tray').checked; changed(); } });
 input('zero-rpm').addEventListener('change', () => {
   if (!draft) return;

@@ -28,17 +28,21 @@ One worker thread owns the ADL session; the handle is not `Send`/`Sync`. Drop at
 
 ## Curve execution and Zero RPM
 
-The driver executes a native five-point curve. The worker never flattens all points into a periodic fixed-PWM command. Writes request only fan-curve entries and Zero RPM, then verify exact readback. Fan-only reset flags preserve unrelated tuning.
+`temperature_source` defaults to `gpu`, including profiles missing the field; alternatives are `hotspot` and `firmware`. GPU/hotspot modes interpolate the saved curve using exactly the selected sensor, on a one-second control clock regardless of the monitoring interval. Missing selected readings are errors; unchanged speed/Zero RPM requests skip writes.
+
+`speed_hold_points` positions five OD8 points as high as their driver limits allow, with strictly increasing temperatures. The first four hold the computed speed; the last reaches 100% at the driver's upper curve-temperature limit, capped at 100 °C. Firmware can raise speed in the final ramp, preserving native escalation if the worker terminates. Unsupported ranges fail explicitly. No mapping between the firmware sensor and edge/hotspot is assumed, and no legacy direct-PWM API is used.
+
+Firmware mode sends the saved five points directly, retaining the previous driver-selected sensor behavior. All writes request only fan-curve entries and Zero RPM and verify exact readback. Fan-only reset flags preserve unrelated tuning. The chart displays the user's requested curve, not the internal speed-hold points.
 
 Optional `zero_rpm_below_percent` defaults to disabled for older profiles. Core policy inverts the curve at the requested speed, rounding the temperature cutoff down. The first speed must be below the threshold (21–60%), and the cutoff cannot exceed 60 °C. Running curve values remain at least 20% or the higher driver minimum.
 
-The hotter available edge/hotspot sensor drives the gate. Stop permission is requested below cutoff minus 3 °C, retained below the cutoff, and withdrawn at or above it. A fresh sample determines the initial flag. Later transitions write only Zero RPM and verify readback, at polling intervals. Measured fan percentage is never the control input, preventing self-locking after fan stop.
+The selected sensor drives the gate; firmware mode uses the hotter available reading. Stop permission is requested below cutoff minus 3 °C, retained below the cutoff, and withdrawn at or above it. A fresh sample determines the initial flag. Sensor mode combines speed/flag transitions; firmware mode writes only the flag. Both verify readback. Measured fan percentage is never the control input.
 
 Permission does not force physical 0% PWM or configure firmware restart hysteresis. The local RX 5600 XT exposes the toggle but no adjustable stop-temperature range. Actual stop/restart still needs hardware validation. The native curve may use a different internal sensor.
 
 ## Worker and recovery
 
-The worker sleeps until a request or monotonic deadline. A hidden frontend does not issue hardware polling. Failed readings invalidate visible telemetry; two consecutive failures during custom control attempt restoration. A gap over 15 seconds is treated as resume/stall. Every four samples, curve values and the expected Zero RPM flag are checked for external changes; before a Zero RPM transition they are checked again. The app restores instead of fighting another controller.
+The worker sleeps until a request or monotonic deadline. A hidden frontend does not issue hardware polling. Failed readings invalidate telemetry; two consecutive failures attempt restoration. Missing selected sensors in otherwise valid samples stop sensor control immediately. A gap over 15 seconds is treated as resume/stall. Sensor mode checks the last confirmed curve/flag every tick; firmware mode checks every four samples and before flag transitions. The app restores instead of fighting another controller.
 
 Edge ≥90 °C or hotspot ≥105 °C triggers restoration. These are application safeguards, not official AMD operating limits. Failed Zero RPM writes/readback also trigger restoration. A failed restore never reports automatic control as successful.
 
@@ -68,7 +72,7 @@ The frontend has no filesystem/shell access or remote dependencies. SVGs are emi
 
 ## Future backends
 
-The hardware trait is independent of Tauri/Windows. Linux sysfs/hwmon is not implemented. The core `StepDown` helper is for future host-PWM control, separate from native-curve execution and the Zero RPM gate. Host-PWM needs independent supervision and recovery semantics first.
+The hardware trait is independent of Tauri/Windows. Linux sysfs/hwmon is not implemented. `StepDown` remains available for future smoothing or a separate host-PWM backend. Current sensor control uses OD8 speed holds rather than direct PWM.
 
 ## References
 

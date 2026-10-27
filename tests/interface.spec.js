@@ -55,12 +55,12 @@ test.beforeEach(async ({ page }) => {
 for (const colorScheme of ['light', 'dark']) {
   test(`desktop fits the viewport in ${colorScheme} appearance`, async ({ page }) => {
     await page.emulateMedia({ colorScheme });
-    for (const [width, height] of [[1920, 1080], [1920, 1000], [1536, 824], [1366, 768], [1280, 720], [920, 790]]) {
+    for (const [width, height] of [[1920, 1080], [1920, 1000], [1536, 824], [1366, 768], [1280, 720], [1200, 790]]) {
       await page.setViewportSize({ width, height });
       await expect.poll(() => page.evaluate(() => ({
         x: document.documentElement.scrollWidth - innerWidth,
         y: document.documentElement.scrollHeight - innerHeight,
-      }))).toEqual({ x: 0, y: 0 });
+      })), { message: `viewport ${width} × ${height}` }).toEqual({ x: 0, y: 0 });
       await expect(page.getByRole('button', { name: 'Use driver defaults' })).toBeInViewport({ ratio: 1 });
       await expect(page.locator('footer')).toBeInViewport({ ratio: 1 });
     }
@@ -68,11 +68,75 @@ for (const colorScheme of ['light', 'dark']) {
 }
 
 test('small windows keep settings reachable without horizontal overflow', async ({ page }) => {
-  for (const width of [680, 390]) {
+  for (const width of [1199, 920, 680, 390]) {
     await page.setViewportSize({ width, height: 650 });
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width);
     await page.getByRole('button', { name: 'Save all changes' }).scrollIntoViewIfNeeded();
     await expect(page.getByRole('button', { name: 'Save all changes' })).toBeInViewport();
+  }
+});
+
+test('sensor choice updates the chart, persists, and locks while active', async ({ page }) => {
+  const sensor = page.getByRole('combobox', { name: 'Curve temperature' });
+  await expect(sensor).toHaveValue('gpu');
+  await sensor.selectOption('hotspot');
+  await expect(page.locator('#temperature-axis')).toHaveText('Hotspot temperature (°C)');
+  await expect(page.locator('#zero-feedback')).toContainText('hotspot temperature');
+  await expect(page.getByRole('switch')).toBeDisabled();
+  await page.getByRole('button', { name: 'Save all changes' }).click();
+  expect(await page.evaluate(() => window.gpu.config.temperature_source)).toBe('hotspot');
+  await page.getByRole('switch').check();
+  await expect(sensor).toBeDisabled();
+  await page.getByRole('switch').uncheck();
+  await expect(sensor).toBeEnabled();
+  await expect(sensor).toHaveValue('hotspot');
+});
+
+for (const colorScheme of ['light', 'dark']) {
+test(`curve fields stay uniform and readable while resizing in ${colorScheme}`, async ({ page }) => {
+  await page.emulateMedia({ colorScheme });
+  for (const width of [1920, 1366, 1120, 1024, 920, 900, 899, 760, 701, 700, 680, 520, 390]) {
+    await page.setViewportSize({ width, height: 790 });
+    const sizes = await page.locator('.points input').evaluateAll(fields => fields.map(field => {
+      const { width, height } = field.getBoundingClientRect();
+      return { width, height };
+    }));
+    expect(Math.min(...sizes.map(s => s.width)), `field width at ${width}px`).toBeGreaterThanOrEqual(60);
+    expect(Math.max(...sizes.map(s => s.height)) - Math.min(...sizes.map(s => s.height)), `field heights at ${width}px`).toBeLessThan(1);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth), `page overflow at ${width}px`).toBe(width);
+    if ([1366, 920, 390].includes(width)) await page.screenshot({ path: test.info().outputPath(`layout-${width}.png`), fullPage: true });
+  }
+});
+}
+
+test('missing selected sensor blocks activation but keeps restoration available', async ({ page }) => {
+  await page.getByRole('combobox', { name: 'Curve temperature' }).selectOption('hotspot');
+  await page.getByRole('button', { name: 'Save all changes' }).click();
+  await page.evaluate(() => { window.gpu.sample.hotspot_c = null; window.emitStatus(); });
+  await expect(page.getByRole('switch')).toBeDisabled();
+  await expect(page.locator('#control-help')).toContainText('Selected temperature sensor unavailable');
+  await expect(page.getByRole('button', { name: 'Use driver defaults' })).toBeEnabled();
+});
+
+test('chart dragging and keyboard editing still work after reflow', async ({ page }) => {
+  for (const width of [1366, 920, 390]) {
+    await page.setViewportSize({ width, height: 790 });
+    const field = page.getByRole('spinbutton', { name: 'Point 2, temperature in degrees Celsius', exact: true });
+    await field.fill('50');
+    await page.getByRole('spinbutton', { name: 'Point 2, fan speed in percent', exact: true }).fill('40');
+    const point = page.locator('#hit-1');
+    await page.locator('#chart').scrollIntoViewIfNeeded();
+    const { x, y, width: w, height: h } = await point.boundingBox();
+    await page.mouse.move(x + w / 2, y + h / 2);
+    await page.mouse.down();
+    await page.mouse.move(x + w / 2 + 16, y + h / 2 - 8, { steps: 5 });
+    await page.mouse.up();
+    expect(Number(await field.inputValue())).toBeGreaterThan(50);
+    const previous = Number(await field.inputValue());
+    await point.focus();
+    await page.keyboard.press('ArrowLeft');
+    await expect(field).toHaveValue(String(previous - 1));
+    await expect(page.locator('body')).not.toHaveClass('dragging');
   }
 });
 

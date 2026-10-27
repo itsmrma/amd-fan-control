@@ -45,13 +45,19 @@ Automatic means ADL fan defaults. Failed reset is reported as an error. If the d
 ## Zero RPM below 25%
 
 1. Restore automatic. Set points 1 and 2 to 40 °C / 20% and 50 °C / 40%. Keep the rest increasing and reach 100% by 85 °C.
-2. Enable **Allow fans to stop**, keep 25%, save, and apply. This gives a conservative 42 °C cutoff. Initial permission requires the hotter sensor below 39 °C; permission is withdrawn at 42 °C.
+2. Choose **GPU temperature**, enable **Allow fans to stop**, keep 25%, save, and apply. This gives a 42 °C cutoff. Initial permission requires GPU temperature below 39 °C; permission is withdrawn at 42 °C. Repeat separately with **Junction / hotspot** using that sensor. Firmware mode uses the hotter reading.
 3. Observe actual RPM. Permission accepted by the driver is not proof the fans physically stopped. Firmware can veto stopping and choose its own restart behavior.
-4. Let temperature cross naturally and confirm transitions, restart, and the re-arm band. Do not deliberately overheat the card. A hotter hotspot must keep the gate from stopping the fans.
+4. Let the selected temperature cross naturally and confirm transitions, restart, and the re-arm band. Do not deliberately overheat the card. Both emergency thermal guards remain active for every selection.
 5. Restore automatic and verify default curve points and Zero RPM state.
 6. Test unsupported capability, write/readback failures, missing sensors, and external changes with a fake backend before hardware failure scenarios.
 
 Physical stop/restart validation remains pending. Do not describe this as hardware-verified until these checks pass on the specific board and driver.
+
+## Selected-sensor speed control
+
+Start with Zero RPM disabled. Test GPU temperature and hotspot separately: save the selection, activate, and compare the requested speed from interpolation against driver settings and independently observed fan behavior. Confirm one-second control updates even with a longer monitoring interval and no repeated writes for an unchanged request. OD8 should hold the requested speed at its first four high-temperature points, with a final native ramp to 100% at the driver's maximum (capped at 100 °C). Do not deliberately heat the card to test the ramp; use automated checks for the curve geometry.
+
+Verify switch-off/quit restore defaults. Use fake backends for a missing selected sensor, rejected or coerced writes, external changes, and failed restoration. **Driver / firmware sensor** should retain the previous five-point behavior. New speed-hold writes and physical response remain unverified on hardware until this procedure passes.
 
 ## Automated checks and packaging
 

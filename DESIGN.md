@@ -157,11 +157,11 @@ Use the local **Segoe UI, system-ui, sans-serif** stack throughout. There is no 
 
 ## Layout
 
-The Operate surface fills the window with fluid 16–32px page padding and no maximum content width, with tighter vertical spacing on shorter desktops. The header pairs a 44px local fan mark with the title, selected GPU, and alpha version. Four telemetry columns precede the workspace. At 900px and above, the curve shares the workspace with a 300px Settings panel (340px above 1600px). Narrower windows stack the panels. Settings stay visible without a disclosure arrow; GPU and refresh controls share a row.
+The Operate surface fills the window with fluid 16–32px page padding and no maximum content width, with tighter vertical spacing on shorter desktops. The header pairs a 44px local fan mark with the title, selected GPU, and alpha version. Four telemetry columns precede the workspace. At 1200px and above, the curve shares the workspace with a 300px Settings panel (340px above 1600px). Narrower windows stack the panels. Settings stay visible without a disclosure arrow; GPU and refresh controls share a row. The curve header includes a saved temperature-source selector: GPU temperature by default, junction/hotspot, or the previous driver/firmware mode. The axis label and Zero RPM explanation follow the selection; edits lock during custom control.
 
 The chart grows horizontally and vertically with available space. Its SVG is positioned inside an independently sized flex container to avoid intrinsic SVG aspect-ratio feedback during resize. ResizeObserver updates the viewBox to CSS-pixel dimensions, retaining legible labels and 48px pointer targets. Five fieldsets identify the curve points, each with distinct **Temp (°C)** and **Fan (%)** labels. Point values use tabular numerals.
 
-At 700px or less, telemetry becomes two columns and point groups use three columns with stacked fields. Below 420px, point groups use two columns. Settings and footer stack as needed. The page scrolls vertically on short windows; horizontal page overflow is avoided. Browser review covers 680, 920, 1366, and 1920px desktop widths plus a 390px stress check in both system themes across the captures.
+At 700px or less, telemetry becomes two columns. Curve fields use container queries: paired fields above 780px of panel content, stacked fields below that, three equal point columns below 400px, and two below 260px. Labels never wrap and input heights remain 44px or more. Settings and footer stack as needed. The page scrolls vertically on short windows; horizontal page overflow is avoided. Browser review covers 680, 920, 1366, and 1920px desktop widths plus a 390px stress check in both system themes across the captures.
 
 ## Elevation & Depth
 

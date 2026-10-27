@@ -26,13 +26,18 @@
       </section>
       <div class="workspace">
         <section class="curve-panel panel" aria-labelledby="curve-title">
-          <div class="section-head"><h2 id="curve-title">Fan curve</h2><span id="mode" role="status">Initializing</span></div>
+          <div class="section-head">
+            <h2 id="curve-title">Fan curve</h2>
+            <label class="curve-source"><span class="sr-only">Curve temperature</span><select id="temperature-source" disabled aria-describedby="sensor-help"><option value="gpu">GPU temperature</option><option value="hotspot">Junction / hotspot</option><option value="firmware">Driver / firmware sensor</option></select></label>
+            <span id="mode" role="status">Initializing</span>
+          </div>
+          <p id="sensor-help" class="sr-only">Uses GPU temperature for the curve and Zero RPM. Hotspot protection stays active.</p>
           <div class="control-mode">
             <label class="control-switch" title="Turn on to apply the saved custom curve. Turn off to restore the graphics driver's default fan curve and Zero RPM setting."><input type="checkbox" id="custom-control" role="switch" aria-describedby="control-help" disabled /><span>Use custom fan curve</span></label>
             <p id="control-help" class="hint">On: your saved curve. Off: restore driver defaults.</p>
           </div>
           <p class="hint">Drag points or enter exact values below.</p>
-          <div class="chart-labels"><span>Fan speed (%)</span><span>GPU temperature (°C)</span></div>
+          <div class="chart-labels"><span>Fan speed (%)</span><span id="temperature-axis">GPU temperature (°C)</span></div>
           <div class="chart-container"><svg id="chart" viewBox="0 0 760 300" role="group" aria-label="Fan curve: temperature in degrees Celsius and fan speed in percent"></svg></div>
           <p id="zero-legend" class="hint chart-legend" hidden><span class="legend-dash" aria-hidden="true"></span><span id="zero-legend-text"></span></p>
           <div id="points" class="points"></div>

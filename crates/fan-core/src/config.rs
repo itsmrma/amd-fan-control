@@ -3,6 +3,33 @@ use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::{io::Write, path::Path};
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TemperatureSource {
+    #[default]
+    Gpu,
+    Hotspot,
+    Firmware,
+}
+
+impl TemperatureSource {
+    pub fn temperature(self, sample: &crate::hardware::Sample) -> Result<i32> {
+        sample.validate()?;
+        match self {
+            Self::Gpu => sample.edge_c.context("GPU temperature sensor unavailable"),
+            Self::Hotspot => sample
+                .hotspot_c
+                .context("Hotspot temperature sensor unavailable"),
+            Self::Firmware => sample
+                .edge_c
+                .into_iter()
+                .chain(sample.hotspot_c)
+                .max()
+                .context("No temperature available"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
@@ -10,6 +37,7 @@ pub struct Config {
     pub adapter_id: Option<String>,
     pub curve: Vec<Point>,
     pub polling_ms: u64,
+    pub temperature_source: TemperatureSource,
     pub start_in_tray: bool,
     /// Missing in older profiles: preserve their previous fan behavior.
     pub zero_rpm_below_percent: Option<i32>,
@@ -24,6 +52,7 @@ impl Default for Config {
                 .map(|(temperature, speed)| Point { temperature, speed })
                 .to_vec(),
             polling_ms: 2500,
+            temperature_source: TemperatureSource::Gpu,
             start_in_tray: false,
             zero_rpm_below_percent: None,
         }
@@ -50,7 +79,7 @@ impl Config {
     }
 
     /// Re-enable only after cooling 3 °C below the cutoff; resume immediately
-    /// at the cutoff. Use the hottest available sensor and never the measured
+    /// at the cutoff. Use the selected sensor and never the measured
     /// fan percentage (which falls to zero as a consequence of fan stop).
     pub fn zero_rpm_requested(
         &self,
@@ -61,11 +90,7 @@ impl Config {
         let Some(stop) = self.zero_rpm_stop_temperature()? else {
             return Ok(false);
         };
-        let temperature = [sample.edge_c, sample.hotspot_c]
-            .into_iter()
-            .flatten()
-            .max()
-            .context("No temperature available for Zero RPM")?;
+        let temperature = self.temperature_source.temperature(sample)?;
         Ok(!sample.too_hot() && temperature < stop - if active { 0 } else { 3 })
     }
 
@@ -105,6 +130,7 @@ mod tests {
     fn zero_rpm_uses_hotter_sensor_and_rearms_only_after_cooling() {
         let mut c = Config {
             zero_rpm_below_percent: Some(25),
+            temperature_source: TemperatureSource::Firmware,
             ..Config::default()
         };
         c.curve[0].speed = 20;
@@ -138,6 +164,49 @@ mod tests {
             .unwrap());
         c.zero_rpm_below_percent = None;
         assert!(!c.zero_rpm_requested(&sample(Some(30), None), true).unwrap());
+    }
+
+    #[test]
+    fn selected_sensor_is_explicit_and_both_thermal_guards_remain_active() {
+        let mut c = Config {
+            zero_rpm_below_percent: Some(25),
+            ..Config::default()
+        };
+        c.curve[0].speed = 20;
+        let mut sample = Sample {
+            edge_c: Some(35),
+            hotspot_c: Some(65),
+            ..Sample::default()
+        };
+        assert!(c.zero_rpm_requested(&sample, false).unwrap());
+        assert_eq!(c.temperature_source.temperature(&sample).unwrap(), 35);
+        c.temperature_source = TemperatureSource::Hotspot;
+        assert!(!c.zero_rpm_requested(&sample, false).unwrap());
+        assert_eq!(c.temperature_source.temperature(&sample).unwrap(), 65);
+        sample.hotspot_c = None;
+        assert!(c.zero_rpm_requested(&sample, false).is_err());
+        c.temperature_source = TemperatureSource::Gpu;
+        sample.hotspot_c = Some(105);
+        assert!(!c.zero_rpm_requested(&sample, false).unwrap());
+        sample.edge_c = None;
+        assert!(c.temperature_source.temperature(&sample).is_err());
+    }
+
+    #[test]
+    fn missing_source_defaults_to_gpu_and_explicit_source_roundtrips() {
+        let mut json = serde_json::to_value(Config::default()).unwrap();
+        json.as_object_mut().unwrap().remove("temperature_source");
+        let mut config: Config = serde_json::from_value(json).unwrap();
+        assert_eq!(config.temperature_source, TemperatureSource::Gpu);
+        config.temperature_source = TemperatureSource::Hotspot;
+        let json = serde_json::to_string(&config).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Config>(&json)
+                .unwrap()
+                .temperature_source,
+            TemperatureSource::Hotspot
+        );
+        assert!(serde_json::from_str::<Config>(&json.replace("hotspot", "unknown")).is_err());
     }
 
     #[test]

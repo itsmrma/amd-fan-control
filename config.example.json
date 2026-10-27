@@ -9,6 +9,7 @@
     { "temperature": 85, "speed": 100 }
   ],
   "polling_ms": 2500,
+  "temperature_source": "gpu",
   "start_in_tray": false,
   "zero_rpm_below_percent": null
 }

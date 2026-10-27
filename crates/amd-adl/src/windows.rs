@@ -1,7 +1,7 @@
 use anyhow::{bail, Result};
 use fan_core::{
     curve::{native_points, Point},
-    hardware::{Adapter, CurveInfo, GpuBackend, Sample},
+    hardware::{speed_hold_points, Adapter, CurveInfo, GpuBackend, Sample},
 };
 use std::{
     ffi::{c_char, c_void, CStr},
@@ -67,6 +67,24 @@ fn string(bytes: &[c_char]) -> String {
 }
 
 impl AdlBackend {
+    fn write_curve(&mut self, points: &[Point; 5], zero_rpm: bool) -> Result<()> {
+        self.require_selected()?;
+        if self.sample()?.too_hot() {
+            bail!("GPU is too hot to start custom fan control");
+        }
+        self.owns_curve = true;
+        // SAFETY: five validated C-compatible points; the bridge checks driver
+        // ranges, monotonicity and exact readback, and acquires the GPU mutex.
+        if let Err(e) = self
+            .check(unsafe { afc_apply(self.handle.as_ptr(), points.as_ptr(), i32::from(zero_rpm)) })
+        {
+            match self.restore_automatic() {
+                Ok(()) => bail!("{e}; driver default fan settings restored"),
+                Err(reset) => bail!("{e}; restoring driver default fan settings failed: {reset:#}"),
+            }
+        }
+        Ok(())
+    }
     pub fn open() -> Result<Self> {
         let mut error = [0; 512];
         // SAFETY: buffer is writable for its declared size. The bridge returns an owned session.
@@ -173,24 +191,12 @@ impl GpuBackend for AdlBackend {
         Ok(sample)
     }
     fn apply_native_curve(&mut self, points: &[Point; 5], zero_rpm: bool) -> Result<()> {
-        self.require_selected()?;
         native_points(points)?;
-        let sample = self.sample()?;
-        if sample.too_hot() {
-            bail!("GPU is too hot to start custom fan control");
-        }
-        self.owns_curve = true; // A partially successful write still needs cleanup.
-                                // SAFETY: the bridge reads exactly five valid C-compatible points, synchronously.
-        if let Err(e) = self
-            .check(unsafe { afc_apply(self.handle.as_ptr(), points.as_ptr(), i32::from(zero_rpm)) })
-        {
-            let reset = self.restore_automatic();
-            match reset {
-                Ok(()) => bail!("{e}; driver default fan settings restored"),
-                Err(reset) => bail!("{e}; restoring driver default fan settings failed: {reset:#}"),
-            }
-        }
-        Ok(())
+        self.write_curve(points, zero_rpm)
+    }
+    fn apply_speed(&mut self, percent: i32, zero_rpm: bool) -> Result<()> {
+        let points = speed_hold_points(&self.curve_info()?, percent)?;
+        self.write_curve(&points, zero_rpm)
     }
     fn restore_automatic(&mut self) -> Result<()> {
         self.require_selected()?;
