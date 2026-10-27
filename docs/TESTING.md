@@ -1,91 +1,70 @@
-# Prima prova su RX 5600 XT
+# Hardware validation on the RX 5600 XT
 
-## 1. Preparazione
+## Preparation and read-only checks
 
-Usa Windows 10/11 x64 e il driver AMD installato. Chiudi MSI Afterburner e
-disattiva la regolazione ventole negli altri tool. Il primo avvio è in sola
-lettura: la curva del driver non viene modificata all'apertura dell'app.
-Mantieni accessibile Radeon Software per verificare indipendentemente le letture.
-
-## 2. Verifica lettura, senza scrivere
-
-Dal pacchetto portatile, nella sua directory:
+Use Windows 10/11 x64 with the AMD driver installed. Close MSI Afterburner and disable other fan controllers. The app opens in monitoring mode without writing fan settings. Keep Radeon Software available for independent observations with its fan tuning disabled.
 
 ```powershell
 .\fan-cli.exe list
 .\fan-cli.exe probe 'pci:41:0:0'
 ```
 
-Sostituisci l'ID con quello restituito da `list`. `probe` stampa i cinque punti
-correnti e i range, poi tre campioni distanziati di 2 s. Confronta edge/hotspot/RPM
-con Radeon Software a riposo. I campioni non sono sincronizzati fra i due tool:
-piccole differenze non dimostrano un errore. Sensori assenti sono `null`, non zero.
-Se mancano entrambe le temperature, l'applicazione della curva resta bloccata.
+Replace the PCI ID with the exact value from `list`. The probe prints curve capabilities, Zero RPM support/state, point limits, and three samples. Missing sensors are `null`. Compare readings independently; unsynchronized samples can differ.
 
-Una prova read-only sul PC di sviluppo (2026-10-27) ha dato:
+Read-only probing on 2026-10-27 confirmed one RX 5600 XT, Overdrive8 curves, 25–100 °C / 20–100% driver ranges, and a Zero RPM toggle, without an adjustable stop-temperature range. This confirms API availability, not successful writes or physical fan stopping.
 
-```text
-AMD Radeon RX 5600 XT | pci:41:0:0 | Overdrive 8
-Curva nativa supportata: sì
-Range dichiarati: 25–100 °C, 20–100%
-Campioni idle: edge 48–49 °C, hotspot 48–49 °C, 135 RPM, rapporto velocità 4%
-```
+## Explicit timed test
 
-Sono dati osservati dal driver, non una certificazione di accuratezza dei sensori.
-Il fallback PMLog legacy è stato necessario con questo driver. L'uguaglianza
-edge/hotspot e il basso RPM devono essere confrontati con una lettura indipendente.
-
-## 3. Prova temporizzata esplicita
-
-Chiudi prima la GUI, copia/modifica `config.example.json` se necessario e avvia:
+Close the GUI first and review `config.example.json`:
 
 ```powershell
 .\fan-cli.exe test-curve 'pci:41:0:0' .\config.example.json
 ```
 
-Il comando applica una curva non decrescente (30/40/60/80/100%), la rilegge e
-campiona per 15 s, poi richiede il ripristino ai default ventola. Fallimenti di
-lettura o soglie termiche interrompono la prova e tentano il ripristino.
-Non eseguire stress test durante questa prima prova e non terminare forzatamente
-il processo: la prova del kill va fatta in un secondo momento dopo il riscontro
-della curva nativa. `Ctrl+C` non è attualmente un percorso di uscita gestito.
+The command applies and reads back five points, samples for 15 seconds, then requests fan defaults. Read failures or temperature protection abort and attempt restoration. Do not run a stress test during initial validation or force-terminate the process. Ctrl+C is not a managed exit path.
 
-Per richiedere esplicitamente i default dopo una prova interrotta:
+To request defaults after an interrupted test:
 
 ```powershell
 .\fan-cli.exe reset 'pci:41:0:0'
 ```
 
-“Automatico” significa default delle impostazioni fan in ADL. Un errore viene
-stampato e non è considerato un successo. Se il driver non risponde, usare i suoi
-controlli ufficiali e riavviare il sistema se necessario.
+Automatic means ADL fan defaults. Failed reset is reported as an error. If the driver stops responding, use official driver controls and restart the system if needed.
 
-## 4. Prova GUI e lifecycle
+## GUI and lifecycle
 
-1. Apri l'app; attendi almeno tre letture coerenti.
-2. Trascina un punto e modifica gli stessi valori da tastiera. Un valore fuori
-   range, temperature duplicate o velocità decrescenti devono essere rifiutati.
-3. Salva, applica e verifica la curva in Radeon Software, con il suo tuning inattivo.
-4. Osserva l'aumento di RPM, poi premi Automatico/default e verifica il ripristino.
-5. Applica di nuovo, chiudi la finestra: l'icona tray deve restare e aggiornare il tooltip.
-6. Apri dalla tray ed esci dal relativo menu: controlla il ritorno ai default.
-7. Verifica login autostart e avvio nella tray. Le due opzioni sono indipendenti;
-   l'avvio nella tray va salvato con Salva impostazioni. Non viene riattivata automaticamente la curva.
-8. Solo dopo queste prove valuta sospensione/ripresa, reset driver e processo
-   terminato forzatamente, verificando cosa rimane effettivamente nel driver.
+1. Wait for three consistent readings. Confirm interface, error messages, and tray menu are English.
+2. Resize to 680 × 650, 920 × 790, 1366 × 900, and maximized. Check both themes, logo, chart sizing, explicit input labels, and Settings below/beside the curve. No horizontal page overflow should appear.
+3. Drag each point from its center and hit-area edge. It should not jump on pointer-down or select text. Drag beyond the graph and release; constraints must hold. Pointer cancellation or window blur must end dragging.
+4. Edit numbers after dragging, and use chart arrow keys/Shift. Reject duplicate temperatures, decreasing speeds, invalid values, and a last point below 100% or above 85 °C.
+5. Save/apply, verify independently, restore automatic, and check defaults.
+6. Apply, close/reopen via tray, and quit. Verify restoration before exit.
+7. Test Windows autostart separately from start in tray. Save the latter with **Save settings**. Restarting must not silently apply the curve.
+8. After these checks, evaluate sleep/resume, driver resets, external changes, and forced termination. Record the state left in the driver.
 
-Registrare versione del driver, ID GPU, curva, orario e comportamento osservato
-quando si apre una segnalazione. I test CI non hanno una GPU AMD: verificano
-compilazione, contratti Rust e packaging, non il funzionamento fisico delle ventole.
+## Zero RPM below 25%
 
-## 5. Build e release
+1. Restore automatic. Set points 1 and 2 to 40 °C / 20% and 50 °C / 40%. Keep the rest increasing and reach 100% by 85 °C.
+2. Enable **Allow fans to stop**, keep 25%, save, and apply. This gives a conservative 42 °C cutoff. Initial permission requires the hotter sensor below 39 °C; permission is withdrawn at 42 °C.
+3. Observe actual RPM. Permission accepted by the driver is not proof the fans physically stopped. Firmware can veto stopping and choose its own restart behavior.
+4. Let temperature cross naturally and confirm transitions, restart, and the re-arm band. Do not deliberately overheat the card. A hotter hotspot must keep the gate from stopping the fans.
+5. Restore automatic and verify default curve points and Zero RPM state.
+6. Test unsupported capability, write/readback failures, missing sensors, and external changes with a fake backend before hardware failure scenarios.
 
-Il job GitHub Windows installa la toolchain, esegue test/lint e produce MSI,
-NSIS EXE e ZIP con GUI+CLI. L'installer usa il bootstrapper WebView2; lo ZIP non
-include un runtime browser da centinaia di MB e usa quello installato nel sistema.
-I checksum `SHA256SUMS.txt` sono allegati alla release.
+Physical stop/restart validation remains pending. Do not describe this as hardware-verified until these checks pass on the specific board and driver.
 
-Le misure di memoria e CPU vanno fatte sul binario release, includendo tutti i
-processi WebView2 associati. Riportare separatamente app visibile e tray nascosta;
-non è stato ancora fissato un budget numerico validato. Per ridurre ulteriormente
-la memoria sarà possibile separare un daemon senza webview, se le misure lo richiedono.
+## Automated checks and packaging
+
+```powershell
+npm run build
+cargo fmt --all --check
+cargo test --locked --workspace
+cargo clippy --locked --workspace --all-targets -- -D warnings
+npm run tauri build -- --bundles msi,nsis
+```
+
+Automated tests cover curve/policy/configuration and fake-backend failure handling without GPU writes. Browser checks use mocked IPC; they cannot validate ADL/WebView2 behavior.
+
+CI packages MSI, NSIS, and a GUI/CLI ZIP with SHA-256 checksums. Installers bootstrap WebView2; ZIP builds need an existing runtime. Measure release CPU/memory including associated WebView2 processes, separately for visible and hidden windows.
+
+For issues, include GPU/board, driver version, PCI ID, config, timestamps, readings, and actual fan behavior.

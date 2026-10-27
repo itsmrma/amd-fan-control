@@ -22,6 +22,8 @@ struct RawAdapter {
 #[derive(Default)]
 struct RawCurve {
     supported: i32,
+    zero_rpm_supported: i32,
+    zero_rpm_enabled: i32,
     current: [Point; 5],
     minimum: [Point; 5],
     maximum: [Point; 5],
@@ -42,8 +44,9 @@ unsafe extern "C" {
     fn afc_select(handle: *mut c_void, adapter: i32) -> i32;
     fn afc_curve_info(handle: *mut c_void, output: *mut RawCurve) -> i32;
     fn afc_sample(handle: *mut c_void, output: *mut RawSample) -> i32;
-    fn afc_apply(handle: *mut c_void, points: *const Point) -> i32;
+    fn afc_apply(handle: *mut c_void, points: *const Point, zero_rpm: i32) -> i32;
     fn afc_reset(handle: *mut c_void) -> i32;
+    fn afc_zero_rpm(handle: *mut c_void, enabled: i32) -> i32;
     fn afc_error(handle: *mut c_void) -> *const c_char;
 }
 
@@ -88,7 +91,7 @@ impl AdlBackend {
     }
     fn require_selected(&self) -> Result<()> {
         if !self.selected {
-            bail!("Seleziona una GPU prima di accedere all'hardware");
+            bail!("Select a GPU before accessing hardware");
         }
         Ok(())
     }
@@ -101,7 +104,7 @@ impl GpuBackend for AdlBackend {
         let n = unsafe { afc_adapters(self.handle.as_ptr(), out.as_mut_ptr(), 128) };
         self.check(n)?;
         if n as usize > out.len() {
-            bail!("Conteggio ADL fuori limite");
+            bail!("ADL adapter count out of range");
         }
         Ok(out[..n as usize]
             .iter()
@@ -122,7 +125,7 @@ impl GpuBackend for AdlBackend {
             .iter()
             .any(|a| a.id == adapter.id && a.index == adapter.index)
         {
-            bail!("GPU non più disponibile");
+            bail!("GPU no longer available");
         }
         // SAFETY: live, thread-local session and a freshly enumerated adapter index.
         self.check(unsafe { afc_select(self.handle.as_ptr(), adapter.index) })?;
@@ -136,6 +139,8 @@ impl GpuBackend for AdlBackend {
         self.check(unsafe { afc_curve_info(self.handle.as_ptr(), &mut raw) })?;
         Ok(CurveInfo {
             supported: raw.supported != 0,
+            zero_rpm_supported: raw.zero_rpm_supported != 0,
+            zero_rpm_enabled: raw.zero_rpm_enabled != 0,
             current: raw.current,
             minimum: raw.minimum,
             maximum: raw.maximum,
@@ -148,7 +153,7 @@ impl GpuBackend for AdlBackend {
         self.check(unsafe { afc_sample(self.handle.as_ptr(), &mut raw) })?;
         for t in [raw.edge, raw.hotspot] {
             if t != -1 && !(1..=125).contains(&t) {
-                bail!("Sensore termico non plausibile: {t} °C");
+                bail!("Implausible temperature reading: {t} °C");
             }
         }
         let valid = |v, min, max| {
@@ -167,18 +172,20 @@ impl GpuBackend for AdlBackend {
         sample.validate()?;
         Ok(sample)
     }
-    fn apply_native_curve(&mut self, points: &[Point; 5]) -> Result<()> {
+    fn apply_native_curve(&mut self, points: &[Point; 5], zero_rpm: bool) -> Result<()> {
         self.require_selected()?;
         native_points(points)?;
         let sample = self.sample()?;
         if sample.too_hot() {
-            bail!("GPU troppo calda per iniziare una prova manuale");
+            bail!("GPU is too hot to start custom fan control");
         }
         self.owns_curve = true; // A partially successful write still needs cleanup.
                                 // SAFETY: the bridge reads exactly five valid C-compatible points, synchronously.
-        if let Err(e) = self.check(unsafe { afc_apply(self.handle.as_ptr(), points.as_ptr()) }) {
+        if let Err(e) = self
+            .check(unsafe { afc_apply(self.handle.as_ptr(), points.as_ptr(), i32::from(zero_rpm)) })
+        {
             let reset = self.restore_automatic();
-            bail!("{e}; ripristino automatico: {reset:?}");
+            bail!("{e}; automatic restore: {reset:?}");
         }
         Ok(())
     }
@@ -188,6 +195,15 @@ impl GpuBackend for AdlBackend {
         self.check(unsafe { afc_reset(self.handle.as_ptr()) })?;
         self.owns_curve = false;
         Ok(())
+    }
+
+    fn set_zero_rpm(&mut self, enabled: bool) -> Result<()> {
+        self.require_selected()?;
+        if !self.owns_curve {
+            bail!("Apply a fan curve before changing Zero RPM");
+        }
+        // SAFETY: live thread-local session; the bridge changes only the fan-stop flag.
+        self.check(unsafe { afc_zero_rpm(self.handle.as_ptr(), i32::from(enabled)) })
     }
 }
 

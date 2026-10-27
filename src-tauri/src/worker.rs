@@ -50,7 +50,7 @@ impl Worker {
             Ok(c) => (c, None),
             Err(e) => (
                 Config::default(),
-                Some(format!("{e:#}. Il file originale è preservato.")),
+                Some(format!("{e:#}. The original file has been preserved.")),
             ),
         };
         let snapshot = Arc::new(Mutex::new(Snapshot {
@@ -73,13 +73,13 @@ impl Worker {
             if !matches!(result, Ok(Ok(()))) {
                 let message = match result {
                     Ok(Err(e)) => format!("{e:#}"),
-                    _ => "Worker interrotto. Il driver conserva l'ultima curva; riavvia l'app per ripristinare.".into(),
+                    _ => "Worker stopped. The driver retains the last curve; restart the app to restore automatic control.".into(),
                 };
                 let mut s = shared.lock().unwrap_or_else(|e| e.into_inner());
                 s.error = Some(message); s.ready = true; s.sample = None;
                 publish(&app, &s);
             }
-        }).expect("Creazione worker GPU");
+        }).expect("Creating GPU worker");
         Self { sender, snapshot }
     }
 
@@ -97,12 +97,12 @@ impl Worker {
             if stopping && !self.snapshot().manual {
                 return Ok(());
             }
-            return Err(format!("Worker non disponibile: {e}"));
+            return Err(format!("Worker unavailable: {e}"));
         }
         receiver
             .recv_timeout(Duration::from_secs(15))
             .map_err(|_| {
-                "Il driver non risponde. Controlla lo stato prima di riprovare.".to_string()
+                "The driver is not responding. Check the status before trying again.".to_string()
             })?
     }
 }
@@ -118,12 +118,12 @@ fn publish(app: &AppHandle, s: &Snapshot) {
                     .map_or("—".into(), |v| v.to_string()),
                 t.rpm.map_or("—".into(), |v| v.to_string()),
                 if s.manual {
-                    "Curva personalizzata"
+                    "Custom curve"
                 } else {
-                    "Monitoraggio"
+                    "Monitoring"
                 }
             ),
-            None => "AMD Fan Control · Telemetria non disponibile".into(),
+            None => "AMD Fan Control · Telemetry unavailable".into(),
         };
         let _ = tray.set_tooltip(Some(&text));
     }
@@ -137,7 +137,7 @@ fn select(backend: &mut dyn GpuBackend, s: &mut Snapshot) -> Result<()> {
     } else {
         None
     };
-    let adapter = selected.context("Seleziona la GPU nelle impostazioni")?;
+    let adapter = selected.context("Select a GPU in Settings")?;
     backend.select(&adapter)?;
     s.selected = Some(adapter);
     s.curve_info = Some(backend.curve_info()?);
@@ -151,6 +151,39 @@ fn restore(backend: &mut dyn GpuBackend, s: &mut Snapshot) -> Result<()> {
     Ok(())
 }
 
+fn validate_zero_rpm(s: &Snapshot) -> Result<()> {
+    if s.config.zero_rpm_stop_temperature()?.is_some()
+        && !s
+            .curve_info
+            .as_ref()
+            .is_some_and(|info| info.zero_rpm_supported)
+    {
+        bail!("This GPU/driver does not expose native Zero RPM control");
+    }
+    Ok(())
+}
+
+fn update_zero_rpm(backend: &mut dyn GpuBackend, s: &mut Snapshot, sample: &Sample) -> Result<()> {
+    let active = s
+        .curve_info
+        .as_ref()
+        .is_some_and(|info| info.zero_rpm_enabled);
+    let desired = s.config.zero_rpm_requested(sample, active)?;
+    if desired != active {
+        let info = backend.curve_info()?;
+        if info.current.as_slice() != s.config.curve.as_slice() || info.zero_rpm_enabled != active {
+            bail!("Fan settings changed outside this app");
+        }
+        backend.set_zero_rpm(desired)?;
+        let info = backend.curve_info()?;
+        if info.zero_rpm_enabled != desired {
+            bail!("Driver did not retain the requested Zero RPM state");
+        }
+        s.curve_info = Some(info);
+    }
+    Ok(())
+}
+
 fn handle(
     action: Action,
     backend: &mut dyn GpuBackend,
@@ -161,12 +194,15 @@ fn handle(
         Action::Save(config) => {
             config.validate()?;
             if s.manual {
-                bail!("Passa in automatico prima di modificare le impostazioni");
+                bail!("Restore automatic control before editing settings");
             }
             // Select using a temporary snapshot; a failed selection does not replace the saved config.
             let mut next = s.clone();
             next.config = config;
-            if let Err(e) = select(backend, &mut next).and_then(|_| next.config.save(path)) {
+            if let Err(e) = select(backend, &mut next).and_then(|_| {
+                validate_zero_rpm(&next)?;
+                next.config.save(path)
+            }) {
                 s.selected = None;
                 s.sample = None;
                 s.sampled_at_ms = None;
@@ -180,15 +216,23 @@ fn handle(
         }
         Action::Apply => {
             if !s.ready || s.sample.is_none() {
-                bail!("Attendi una lettura termica valida");
+                bail!("Wait for a valid temperature reading");
             }
             let points = native_points(&s.config.curve)?;
+            validate_zero_rpm(s)?;
+            let sample = backend.sample()?;
+            let zero_rpm = s.config.zero_rpm_requested(&sample, false)?;
             s.manual = true;
-            if let Err(e) = backend.apply_native_curve(&points) {
-                let reset = restore(backend, s);
-                bail!("{e:#}; ripristino automatico: {reset:?}");
+            match backend
+                .apply_native_curve(&points, zero_rpm)
+                .and_then(|_| backend.curve_info())
+            {
+                Ok(info) => s.curve_info = Some(info),
+                Err(e) => {
+                    let reset = restore(backend, s);
+                    bail!("{e:#}; automatic restore: {reset:?}");
+                }
             }
-            s.curve_info = Some(backend.curve_info()?);
         }
         Action::Automatic => restore(backend, s)?,
         Action::Stop => {
@@ -244,7 +288,7 @@ fn run(
                 if s.manual && now.duration_since(last_tick) > Duration::from_secs(15) {
                     let reset = restore(backend.as_mut(), &mut s);
                     s.error = Some(format!(
-                        "Ripresa dopo sospensione: ripristino automatico {reset:?}"
+                        "Resumed after sleep or a polling stall: automatic restore {reset:?}"
                     ));
                 }
                 last_tick = now;
@@ -258,8 +302,16 @@ fn run(
                         if s.manual && sample.too_hot() {
                             let reset = restore(backend.as_mut(), &mut s);
                             s.error = Some(format!(
-                                "Soglia termica raggiunta: ripristino automatico {reset:?}"
+                                "Temperature threshold reached: automatic restore {reset:?}"
                             ));
+                        }
+                        if s.manual {
+                            if let Err(e) = update_zero_rpm(backend.as_mut(), &mut s, &sample) {
+                                let reset = restore(backend.as_mut(), &mut s);
+                                s.error = Some(format!(
+                                    "Zero RPM control failed: {e:#}; automatic restore: {reset:?}"
+                                ));
+                            }
                         }
                         s.sample = Some(sample);
                         s.sampled_at_ms = SystemTime::now()
@@ -271,12 +323,10 @@ fn run(
                         failures += 1;
                         s.sample = None;
                         s.sampled_at_ms = None;
-                        s.error = Some(format!("Telemetria non disponibile: {e:#}"));
+                        s.error = Some(format!("Telemetry unavailable: {e:#}"));
                         if s.manual && failures >= 2 {
                             let reset = restore(backend.as_mut(), &mut s);
-                            s.error = Some(format!(
-                                "Telemetria persa. Ripristino automatico: {reset:?}"
-                            ));
+                            s.error = Some(format!("Telemetry lost. Automatic restore: {reset:?}"));
                         }
                     }
                 }
@@ -284,12 +334,15 @@ fn run(
                 // Detect an external tuning tool or driver reset; do not fight another controller.
                 if s.manual && ticks.is_multiple_of(4) {
                     let info = backend.curve_info();
-                    if !info
-                        .as_ref()
-                        .is_ok_and(|i| i.current.as_slice() == s.config.curve.as_slice())
-                    {
+                    if !info.as_ref().is_ok_and(|i| {
+                        i.current.as_slice() == s.config.curve.as_slice()
+                            && i.zero_rpm_enabled
+                                == s.curve_info
+                                    .as_ref()
+                                    .is_some_and(|info| info.zero_rpm_enabled)
+                    }) {
                         let reset = restore(backend.as_mut(), &mut s);
-                        s.error = Some(format!("Curva modificata dal driver o da un altro programma. Ripristino: {reset:?}"));
+                        s.error = Some(format!("Curve changed by the driver or another app. Automatic restore: {reset:?}"));
                     }
                 }
             }
@@ -317,6 +370,9 @@ mod tests {
         fn curve_info(&mut self) -> Result<CurveInfo> {
             Ok(CurveInfo {
                 supported: true,
+                zero_rpm_supported: true,
+                zero_rpm_enabled: false,
+
                 current: native_points(&Config::default().curve)?,
                 minimum: [Point {
                     temperature: 25,
@@ -334,7 +390,7 @@ mod tests {
                 ..Sample::default()
             })
         }
-        fn apply_native_curve(&mut self, _: &[Point; 5]) -> Result<()> {
+        fn apply_native_curve(&mut self, _: &[Point; 5], _: bool) -> Result<()> {
             if self.fail_apply {
                 bail!("driver rejected write after partial apply");
             }
@@ -363,6 +419,114 @@ mod tests {
             error: None,
             ready: true,
         }
+    }
+    struct GateGpu {
+        info: CurveInfo,
+        writes: Vec<bool>,
+        reject: bool,
+    }
+    impl GpuBackend for GateGpu {
+        fn adapters(&mut self) -> Result<Vec<Adapter>> {
+            Ok(vec![])
+        }
+        fn select(&mut self, _: &Adapter) -> Result<()> {
+            Ok(())
+        }
+        fn curve_info(&mut self) -> Result<CurveInfo> {
+            Ok(self.info.clone())
+        }
+        fn sample(&mut self) -> Result<Sample> {
+            Ok(Sample {
+                edge_c: Some(38),
+                ..Sample::default()
+            })
+        }
+        fn apply_native_curve(&mut self, points: &[Point; 5], zero_rpm: bool) -> Result<()> {
+            self.info.current = *points;
+            self.info.zero_rpm_enabled = zero_rpm;
+            Ok(())
+        }
+        fn set_zero_rpm(&mut self, enabled: bool) -> Result<()> {
+            self.writes.push(enabled);
+            if !self.reject {
+                self.info.zero_rpm_enabled = enabled;
+            }
+            Ok(())
+        }
+        fn restore_automatic(&mut self) -> Result<()> {
+            self.info.zero_rpm_enabled = false;
+            Ok(())
+        }
+    }
+    fn gate_setup() -> (GateGpu, Snapshot) {
+        let mut s = snapshot();
+        s.config.curve[0].speed = 20;
+        s.config.zero_rpm_below_percent = Some(25);
+        let mut fake = FakeGpu {
+            fail_apply: false,
+            fail_reset: false,
+            resets: 0,
+        };
+        let mut info = fake.curve_info().unwrap();
+        info.current = native_points(&s.config.curve).unwrap();
+        s.curve_info = Some(info.clone());
+        (
+            GateGpu {
+                info,
+                writes: vec![],
+                reject: false,
+            },
+            s,
+        )
+    }
+    #[test]
+    fn zero_rpm_transitions_only_when_needed_and_keeps_the_native_curve() {
+        let (mut gpu, mut s) = gate_setup();
+        handle(
+            Action::Apply,
+            &mut gpu,
+            std::path::Path::new("unused"),
+            &mut s,
+        )
+        .unwrap();
+        assert!(s.curve_info.as_ref().unwrap().zero_rpm_enabled);
+        let warm = Sample {
+            edge_c: Some(42),
+            ..Sample::default()
+        };
+        update_zero_rpm(&mut gpu, &mut s, &warm).unwrap();
+        update_zero_rpm(&mut gpu, &mut s, &warm).unwrap();
+        let cool = Sample {
+            edge_c: Some(38),
+            ..Sample::default()
+        };
+        update_zero_rpm(&mut gpu, &mut s, &cool).unwrap();
+        assert_eq!(gpu.writes, vec![false, true]);
+        assert_eq!(gpu.info.current.as_slice(), s.config.curve.as_slice());
+    }
+    #[test]
+    fn zero_rpm_rejects_unsupported_external_changes_and_failed_readback() {
+        let (mut gpu, mut s) = gate_setup();
+        let cool = Sample {
+            edge_c: Some(38),
+            ..Sample::default()
+        };
+        gpu.info.current[1].speed += 1;
+        assert!(update_zero_rpm(&mut gpu, &mut s, &cool).is_err());
+        assert!(gpu.writes.is_empty());
+        gpu.info.current = native_points(&s.config.curve).unwrap();
+        gpu.reject = true;
+        assert!(update_zero_rpm(&mut gpu, &mut s, &cool).is_err());
+        assert!(!s.curve_info.as_ref().unwrap().zero_rpm_enabled);
+        s.curve_info.as_mut().unwrap().zero_rpm_supported = false;
+        assert!(handle(
+            Action::Apply,
+            &mut gpu,
+            std::path::Path::new("unused"),
+            &mut s
+        )
+        .is_err());
+        assert!(!s.manual);
     }
     #[test]
     fn failed_apply_attempts_reset_and_clears_manual_only_on_success() {

@@ -1,140 +1,124 @@
 <p align="center"><img src="assets/logo.svg" width="760" alt="AMD Fan Control" /></p>
 
-<p align="center">Una piccola utility desktop Rust + Tauri per la curva ventole AMD.<br />Windows 10/11 prima di tutto. Progettata intorno alla Radeon RX 5600 XT.</p>
+<p align="center">A small Windows desktop utility for AMD GPU fan curves, built with Rust and Tauri.</p>
 
-<p align="center"><a href="https://github.com/itsmrma/amd-fan-control/releases">Scarica la release</a> · <a href="docs/ARCHITECTURE.md">Architettura</a> · <a href="docs/TESTING.md">Primi test</a></p>
+<p align="center"><a href="https://github.com/itsmrma/amd-fan-control/releases">Downloads</a> · <a href="docs/ARCHITECTURE.md">Architecture</a> · <a href="docs/TESTING.md">Hardware testing</a></p>
 
-![Interfaccia alpha con telemetria della RX 5600 XT](assets/screenshot.png)
+## Why I built this
 
-## Stato: 0.1 alpha
+I got tired of using MSI Afterburner, so I built a fan-control app for my own graphics card: an **AMD Radeon RX 5600 XT**. I wanted a lightweight way to set a fan curve, read temperatures and fan speeds, and get back to the driver's defaults.
 
-Questa prima versione usa **Overdrive8 e una curva nativa a cinque punti**.
-AMD documenta che, quando la curva nativa è disponibile, i controlli legacy della
-ventola possono essere disabilitati: inviare continuamente vecchi comandi PWM
-non sarebbe un'implementazione affidabile per questa GPU.
+This is a personal project built around that card. **It is not a universal AMD fan controller, and I cannot guarantee it will work on other cards.** Even another RX 5600 XT can behave differently with a different board BIOS or driver.
 
-La RX 5600 XT locale ha confermato capability OD8, limiti curva e letture termiche
-durante un test in sola lettura. **L'applicazione delle curve deve ancora essere
-validata sulla scheda fisica** seguendo la [procedura di prova](docs/TESTING.md).
+![AMD Fan Control interface preview; telemetry is unavailable in this browser capture](assets/screenshot.png)
 
-### Incluso
+## Compatibility
 
-- Curva SVG trascinabile, con modifica numerica e validazione in Rust.
-- Temperatura GPU edge e junction/hotspot, RPM e velocità percentuale rilevati.
-- Applicazione esplicita della curva e verifica dei valori riletti dal driver.
-- Ripristino dei default delle sole ventole; nessuna modifica a clock, voltaggi o power limit.
-- Worker Rust dedicato, polling configurabile 1–10 secondi (default 2,5 s), nessun busy loop.
-- Icona tray con temperatura/RPM, chiusura a tray e avvio all'accesso opzionale.
-- JSON locale con sostituzione atomica, tema di sistema, frontend vanilla senza librerie grafico.
-- MSI, installer NSIS e ZIP portatile Windows x64 tramite GitHub Actions.
+Windows 10/11 x64 with an AMD display driver and Microsoft Edge WebView2 Runtime. The backend uses **ADL Overdrive8 native five-point fan curves**. Architecture names alone do not establish compatibility: the driver must expose curve controls, point limits, and temperature sensors.
 
-### Limiti espliciti della prima alpha
+These desktop Radeon families are reasonable candidates for the same approach, **not a tested support list**:
 
-- All'avvio l'app monitora e **non riapplica automaticamente** il profilo salvato.
-  Se una precedente esecuzione è stata terminata forzatamente, il driver può avere
-  ancora la vecchia curva: “Monitoraggio” non significa “BIOS già ripristinato”.
-- I cinque punti sono un vincolo del backend OD8. Aggiunta/rimozione libera e
-  isteresi software sono previste per un backend PWM diretto, non attive su OD8.
-- La % PMLog è il rapporto RPM/RPM massimo, **non una misura elettrica del duty PWM**.
-  I sensori non disponibili restano vuoti; non vengono inventati RPM stimati.
-- Linux ha un'interfaccia Rust riutilizzabile, ma il backend sysfs/hwmon non è ancora implementato.
-- Non esiste ancora un watchdog esterno. Un kill forzato non esegue `Drop`:
-  rimane la curva nel driver, che continua a reagire alla temperatura. Non è
-  garantito il ritorno immediato al BIOS dopo crash, riavvio driver o sospensione.
+| AMD architecture | Desktop GPU family | Project status |
+| --- | --- | --- |
+| RDNA / Navi 1x | RX 5000, including my RX 5600 XT | Development target. Read-only curve capabilities, limits, telemetry, and Zero RPM toggle observed locally. Hardware writes still need validation. |
+| RDNA 2 / Navi 2x | RX 6000 | May work if the driver exposes the required ADL controls. Untested. |
+| RDNA 3 / Navi 3x | RX 7000 | May work if the driver exposes the required ADL controls. Untested. |
+| RDNA 4 / Navi 4x | RX 9000 | Candidate only; newer hardware/driver interfaces may differ. Untested. |
 
-## Avvio rapido
+Family names follow [AMD's RDNA documentation](https://www.amd.com/en/technologies/rdna.html). Possible compatibility is an implementation-based expectation, not an AMD support claim. See the [official ADL SDK](https://github.com/GPUOpen-LibrariesAndSDKs/display-library) for the underlying APIs.
 
-Scarica uno degli installer dalla pagina [Releases](https://github.com/itsmrma/amd-fan-control/releases).
-Gli installer gestiscono Microsoft Edge WebView2 Runtime; per lo ZIP portatile
-deve essere già installato. Il driver AMD deve fornire `atiadlxx.dll` in System32.
-I binari alpha non sono firmati.
+Older GCN cards (Polaris/Vega), integrated graphics, laptop-controlled fans, and Radeon Pro cards are outside the validated scope. Legacy Overdrive5/6/N fan-control backends are not implemented. Linux has a reusable Rust hardware interface, but no working sysfs/hwmon backend yet.
 
-1. Chiudi MSI Afterburner e disattiva altri controllori delle ventole, incluso il tuning di Radeon Software.
-2. Avvia AMD Fan Control: leggi temperatura, hotspot e RPM prima di applicare modifiche.
-3. Seleziona la GPU se necessario; modifica i cinque punti e premi **Salva curva**.
-4. Premi **Applica curva manuale**. La curva è trasferita al driver e riletta per verificarla.
-5. Usa **Automatico / default** per tornare ai valori predefiniti. Chiudendo la
-   finestra l'app resta attiva; **Esci** dal menu tray tenta il ripristino prima di terminare.
+## Features
 
-Se il ripristino fallisce, l'app resta aperta con l'errore. Una curva personalizzata
-include almeno 25% e raggiunge il 100% entro 85 °C; i limiti dichiarati dal driver
-sono verificati anche nel bridge. Le soglie edge 90 °C / hotspot 105 °C sono scelte
-conservative di questa alpha, non una dichiarazione sui limiti ufficiali della GPU.
+- Resizable SVG curve editor with dragging, keyboard adjustment, and separate temperature/fan-speed labels.
+- GPU edge temperature, junction/hotspot, fan RPM, and driver-reported speed percentage.
+- Explicit save/apply and driver readback verification.
+- Optional **Zero RPM below a configurable curve-speed threshold**, initially **25%**.
+- Persistent Settings panel, beside the curve in wide windows and below it in smaller windows.
+- Automatic fan-default restoration, tray, optional Windows autostart, and start in tray.
+- System light/dark appearance, local JSON, and a small vanilla TypeScript frontend.
+- MSI, NSIS installer, and portable ZIP builds through GitHub Actions.
 
-Configurazione: `%APPDATA%\amd-fan-control\config.json` su Windows.
-Il file non contiene un flag di controllo manuale da riapplicare di nascosto.
-L'autostart è gestito dal plugin ufficiale Tauri e il relativo stato è letto
-dal sistema operativo.
+Only fan-related settings are written. Clocks, voltages, and power limits are untouched.
 
-## Sviluppo su Windows
+## Getting started
 
-Prerequisiti: Node.js 22 LTS o successivo, Rust stable/MSVC ≥1.90, Visual Studio
-Build Tools con **Desktop development with C++**, Windows SDK e WebView2 Runtime.
-Gli header ADL sono già inclusi e versionati: non servono download di DLL esterne.
+Download from [Releases](https://github.com/itsmrma/amd-fan-control/releases). Installers handle WebView2; portable builds require it already installed. Alpha binaries are unsigned. ADL is loaded from the AMD driver's `atiadlxx.dll` in System32; no separate DLL download is needed.
+
+1. Close MSI Afterburner and disable other fan controllers, including Radeon Software fan tuning.
+2. Open the app and check temperatures and RPM. Select your GPU in **Settings** if necessary.
+3. Drag the five points or edit **Temp (°C)** and **Fan (%)**. Focus a chart point to use left/right for temperature and up/down for speed; Shift uses steps of five.
+4. Click **Save curve**, then **Apply curve**. Saving alone does not change the fans.
+5. Click **Restore automatic** to request the driver's fan defaults.
+
+Closing the window keeps the app in the tray. **Quit** from the tray menu attempts restoration before exiting; if it fails, the app stays open and shows the error.
+
+The app starts in monitoring mode and never silently reapplies a curve. Configuration lives at `%APPDATA%\amd-fan-control\config.json`. Windows autostart takes effect immediately; other settings require **Save settings**, which saves the whole draft including the curve.
+
+### Zero RPM
+
+Enable **Allow fans to stop** and set **When curve speed is below**. The initial threshold is **25%**. Set the first point below that value, for example **40 °C / 20%**, so the curve enters the fan-stop region. Existing profiles keep Zero RPM disabled until you enable and save it.
+
+The threshold refers to **speed requested by the curve**, not measured fan percentage. The app interpolates a temperature cutoff, rounded down to whole degrees. To avoid cycling, it requests fan stop only when the hotter available sensor is more than 3 °C below that cutoff, and disables permission at the cutoff. The cutoff cannot exceed 60 °C. The shaded region shows the cutoff; the line remains the requested native curve.
+
+The worker toggles native Zero RPM permission at polling intervals and verifies it. **This requests fan stop; it does not force electrical 0% PWM.** Firmware may keep the fans running because of temperature, power, or restart conditions. Confirm actual stopping through RPM; an enabled flag is not proof of 0 RPM. Unsupported drivers leave this option unavailable.
+
+Read-only probing confirmed the local RX 5600 XT's toggle but no adjustable native stop-temperature range. The running worker therefore manages the percentage threshold, while the native curve and firmware protections remain in place.
+
+## Alpha limitations
+
+- Hardware writes, physical stop/restart, and lifecycle behavior still need [hardware validation](docs/TESTING.md). Automated checks do not certify fan behavior.
+- Exactly five points: increasing temperatures, non-decreasing speeds, and 100% by 85 °C. Running speeds must be 20–100% and within driver limits; stopping uses the separate Zero RPM flag.
+- The worker attempts restoration at edge ≥90 °C or hotspot ≥105 °C, repeated telemetry failures, long polling stalls, and detected external changes. These are application safeguards, not official GPU limits.
+- No independent watchdog. Forced termination cannot clean up: the native curve and last Zero RPM flag may remain, while the software gate stops updating. Firmware still determines restart. Immediate restoration after crashes, driver resets, or sleep is not guaranteed.
+- Reported percentage is the driver's RPM/max-RPM ratio, not electrical PWM duty. Missing/stale sensors show an em dash.
+- Firmware controls native-curve execution and restart hysteresis. The software gate uses the hotter reported sensor, which may differ from the native curve's internal sensor.
+
+## Development
+
+Prerequisites: Node.js 22 LTS or newer, Rust stable/MSVC ≥1.90, Visual Studio Build Tools with **Desktop development with C++**, Windows SDK, and WebView2 Runtime. Pinned AMD ADL headers are included.
 
 ```powershell
 git clone https://github.com/itsmrma/amd-fan-control.git
 cd amd-fan-control
 npm ci
-cargo test --locked -p fan-core
 npm run tauri dev
 ```
 
-La diagnostica funziona anche senza aprire una webview:
+Read-only diagnostics:
 
 ```powershell
 cargo run --locked -p fan-cli -- list
-# Copia l'ID PCI esatto restituito, per esempio pci:41:0:0
+# Replace with the exact PCI ID returned by list.
 cargo run --locked -p fan-cli -- probe 'pci:41:0:0'
 ```
 
-`probe` legge capability, curva corrente e tre campioni. Non scrive le ventole.
-Il comando `test-curve` è una prova esplicita di 15 secondi con ritorno ai default;
-leggi [TESTING.md](docs/TESTING.md) prima di eseguirlo.
+`probe` reads capabilities, the curve, and three samples without writing fan settings. The explicit `test-curve` command runs a 15-second hardware test and then requests defaults; read [the procedure](docs/TESTING.md) first.
 
 ```powershell
 npm run build
+cargo fmt --all --check
 cargo test --locked --workspace
 cargo clippy --locked --workspace --all-targets -- -D warnings
 npm run tauri build -- --bundles msi,nsis
 ```
 
-## Moduli
+| Directory | Purpose |
+| --- | --- |
+| `crates/fan-core/` | Curve validation/interpolation, Zero RPM policy, JSON, hardware trait |
+| `crates/amd-adl/` | Rust ADL wrapper, C++ bridge, pinned headers |
+| `crates/fan-cli/` | Diagnostics, timed test, restoration |
+| `src-tauri/src/` | Commands, hardware worker, tray, autostart |
+| `src/` | TypeScript, CSS, responsive SVG chart |
+| `assets/` | Original logo/icon and interface preview |
 
-```text
-crates/fan-core/    Curva, interpolazione, isteresi futura, JSON, trait hardware
-crates/amd-adl/     Wrapper Rust e bridge C++ C-ABI, header AMD originali
-crates/fan-cli/     Diagnostica read-only, test temporizzato, ripristino
-src-tauri/src/     Comandi IPC, worker proprietario ADL, tray e autostart
-src/              TypeScript vanilla e CSS; grafico SVG senza dipendenze
-assets/           Logo SVG e sorgente vettoriale delle icone
-```
+See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for ownership and recovery details.
 
-Il bridge C++ evita di ricopiare in Rust layout complessi/versionati dell'SDK.
-Le chiamate unsafe sono concentrate nel wrapper; l'handle non è `Send`/`Sync` e
-vive soltanto nel thread worker. [Dettagli ADL e lifecycle](docs/ARCHITECTURE.md).
+## Builds and releases
 
-## CI e release
+[CI](.github/workflows/build.yml) runs core tests on Linux, Windows tests/lint, and MSI/NSIS/ZIP packaging. Normal builds produce Actions artifacts; a `v*` tag publishes a prerelease after checks pass, with SHA-256 checksums. Release publishing uses `GITHUB_TOKEN`, with `contents: write` scoped to the release job.
 
-Il workflow [build.yml](.github/workflows/build.yml) esegue test del core anche su
-Linux, test/lint su Windows e packaging MSI/NSIS/ZIP. Le normali build producono
-artefatti Actions; un tag `v*` pubblica una **prerelease** solo dopo tutti i job verdi.
+Keep `Cargo.toml`, `package.json`, lockfiles, and `src-tauri/tauri.conf.json` versions aligned before tagging. MSI uses a separate numeric version.
 
-```powershell
-git tag v0.1.0-alpha.1
-git push origin v0.1.0-alpha.1
-```
-
-Non servono secret personali: la pubblicazione usa `GITHUB_TOKEN` con permesso
-`contents: write` esclusivamente nel job release. Il pacchetto include checksum SHA-256.
-Per cambiare versione, aggiorna insieme `Cargo.toml`, `package.json`, lockfile e
-`src-tauri/tauri.conf.json` prima del tag. La versione numerica MSI è separata.
-
-## Fonti ufficiali
-
-- [AMD ADL Overdrive8: capability e curve](https://gpuopen-librariesandsdks.github.io/adl/Overdrive8-example.html)
-- [AMD ADL SDK e sample](https://github.com/GPUOpen-LibrariesAndSDKs/display-library)
-- [Tauri v2: prerequisiti Windows](https://v2.tauri.app/start/prerequisites/)
-- [Tauri v2: tray](https://v2.tauri.app/learn/system-tray/), [autostart](https://v2.tauri.app/plugin/autostart/), [installer Windows](https://v2.tauri.app/distribute/windows-installer/)
-
-MIT. Progetto indipendente, non affiliato ad AMD. [Licenze e attribuzioni](THIRD_PARTY_NOTICES.md).
+MIT. Independent project, not affiliated with AMD or MSI. [Third-party notices](THIRD_PARTY_NOTICES.md).

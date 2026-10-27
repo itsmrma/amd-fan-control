@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="it">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -9,44 +9,55 @@
   </head>
   <body>
     <main>
-      <header>
-        <img src="/assets/icon.svg" width="44" height="44" alt="" />
-        <div><h1>AMD Fan Control</h1><p id="gpu-name">Connessione alla GPU…</p></div>
+      <header class="app-header">
+        <img class="app-logo" src="/assets/icon.svg" width="44" height="44" alt="" draggable="false" />
+        <div class="identity"><h1>AMD Fan Control</h1><p id="gpu-name">Connecting to GPU…</p></div>
         <span class="version">0.1 alpha</span>
       </header>
       <p id="error" role="alert" hidden></p>
-      <section class="telemetry" aria-label="Telemetria GPU" aria-live="off">
-        <div><span>Temperatura GPU</span><strong id="edge">— <small>°C</small></strong></div>
+      <section class="telemetry" aria-label="GPU telemetry" aria-live="off">
+        <div><span>GPU temperature</span><strong id="edge">— <small>°C</small></strong></div>
         <div><span>Junction / hotspot</span><strong id="hotspot">— <small>°C</small></strong></div>
-        <div><span>Ventole</span><strong id="rpm">— <small>RPM</small></strong></div>
-        <div><span>Velocità rilevata</span><strong id="percent">— <small>%</small></strong></div>
+        <div><span>Fan speed</span><strong id="rpm">— <small>RPM</small></strong></div>
+        <div><span>Reported fan speed</span><strong id="percent">— <small>%</small></strong></div>
       </section>
-      <section class="curve-panel" aria-labelledby="curve-title">
-        <div class="section-head"><h2 id="curve-title">Curva ventole</h2><span id="mode" role="status">Inizializzazione</span></div>
-        <p class="hint">Trascina i cinque punti o modifica i valori. Il driver gestisce la curva anche con la finestra chiusa.</p>
-        <svg id="chart" viewBox="0 0 760 252" role="group" aria-label="Curva: temperatura in gradi Celsius e velocità percentuale"></svg>
-        <div id="points" class="points"></div>
-        <p class="hint">Protezione: almeno 25%, velocità crescente e 100% entro 85 °C. Zero RPM disattivato durante il controllo manuale.</p>
-        <div class="actions">
-          <button id="save" class="secondary" disabled>Salva curva</button>
-          <button id="apply" disabled>Applica curva manuale</button>
-          <button id="automatic" class="secondary" disabled>Automatico / default</button>
-        </div>
-        <p id="feedback" role="status">Attendi la prima lettura termica.</p>
-      </section>
-      <details>
-        <summary>Impostazioni</summary>
-        <div class="settings">
-          <label>GPU<select id="adapter"></select></label>
-          <label>Intervallo letture<select id="polling"><option value="2000">2 secondi</option><option value="2500">2,5 secondi</option><option value="3000">3 secondi</option><option value="5000">5 secondi</option><option value="10000">10 secondi</option></select></label>
-          <label class="check"><input type="checkbox" id="autostart" /> Avvia con Windows</label>
-          <label class="check"><input type="checkbox" id="start-tray" /> Avvia nella tray</label>
-        </div>
-        <div class="actions"><button id="save-settings" class="secondary" disabled>Salva impostazioni</button></div>
-        <p id="settings-feedback" role="status"></p>
-        <p class="hint">In questa alpha l'app parte in monitoraggio: applica la curva esplicitamente. L'isteresi della curva nativa dipende dal driver. Il ritardo software è predisposto per futuri backend PWM.</p>
-      </details>
-      <footer><span>Chiudendo la finestra l'app resta nella tray.</span><span>Esci dal menu tray per ripristinare l'automatico.</span></footer>
+      <div class="workspace">
+        <section class="curve-panel panel" aria-labelledby="curve-title">
+          <div class="section-head"><h2 id="curve-title">Fan curve</h2><span id="mode" role="status">Initializing</span></div>
+          <p class="hint">Drag a point or enter exact values below. Save your changes, then apply the curve.</p>
+          <div class="chart-labels"><span>Fan speed (%)</span><span>GPU temperature (°C)</span></div>
+          <div class="chart-container"><svg id="chart" viewBox="0 0 760 300" role="group" aria-label="Fan curve: temperature in degrees Celsius and fan speed in percent"></svg></div>
+          <div id="points" class="points"></div>
+          <p class="hint safety">Increasing temperatures, non-decreasing fan speeds, and 100% by 85 °C. Driver limits apply.</p>
+          <div class="actions">
+            <button id="apply" disabled>Apply curve</button>
+            <button id="save" class="secondary" disabled>Save curve</button>
+            <button id="automatic" class="secondary" disabled>Restore automatic</button>
+          </div>
+          <p id="feedback" role="status">Waiting for the first temperature reading.</p>
+        </section>
+        <aside class="settings-panel panel" aria-labelledby="settings-title">
+          <h2 id="settings-title">Settings</h2>
+          <div class="settings">
+            <fieldset class="fan-stop">
+              <legend>Zero RPM</legend>
+              <label class="check"><input type="checkbox" id="zero-rpm" disabled /> Allow fans to stop</label>
+              <label class="threshold-label" for="zero-threshold">When curve speed is below</label>
+              <div class="threshold-field"><input type="number" id="zero-threshold" min="21" max="60" step="1" value="25" disabled aria-describedby="zero-feedback" /><span>%</span></div>
+              <p id="zero-feedback" class="hint" role="status">Waiting for GPU capabilities.</p>
+              <p class="hint">Uses requested curve speed. Firmware may keep the fans running.</p>
+            </fieldset>
+            <label for="adapter">Graphics card<select id="adapter" disabled><option value="">Select GPU</option></select></label>
+            <label for="polling">Refresh interval<select id="polling" disabled><option value="1000">1 second</option><option value="2000">2 seconds</option><option value="2500" selected>2.5 seconds</option><option value="3000">3 seconds</option><option value="5000">5 seconds</option><option value="10000">10 seconds</option></select></label>
+            <label class="check"><input type="checkbox" id="autostart" disabled /> Launch with Windows</label>
+            <label class="check"><input type="checkbox" id="start-tray" disabled /> Start in system tray</label>
+          </div>
+          <div class="actions"><button id="save-settings" class="secondary" disabled>Save settings</button></div>
+          <p id="settings-feedback" role="status"></p>
+          <p class="hint">The app starts in monitoring mode. Apply your saved curve to enable custom control.</p>
+        </aside>
+      </div>
+      <footer><span>Closing the window keeps the app in the system tray.</span><span>Quit from the tray menu to restore automatic control.</span></footer>
     </main>
     <script type="module" src="/src/main.ts"></script>
   </body>

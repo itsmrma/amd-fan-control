@@ -11,19 +11,19 @@ pub struct Point {
 
 pub fn validate(points: &[Point]) -> Result<()> {
     if !(2..=12).contains(&points.len()) {
-        bail!("Servono da 2 a 12 punti");
+        bail!("A curve requires 2 to 12 points");
     }
     for (i, p) in points.iter().enumerate() {
-        if !(20..=100).contains(&p.temperature) || !(25..=100).contains(&p.speed) {
-            bail!("Temperatura 20–100 °C e velocità 25–100% richieste");
+        if !(20..=100).contains(&p.temperature) || !(20..=100).contains(&p.speed) {
+            bail!("Temperature must be 20–100 °C and fan speed 20–100%");
         }
         if i > 0 && (p.temperature <= points[i - 1].temperature || p.speed < points[i - 1].speed) {
-            bail!("Temperature crescenti e velocità non decrescenti richieste");
+            bail!("Temperatures must increase and fan speeds must not decrease");
         }
     }
     let last = points.last().unwrap();
     if last.speed != 100 || last.temperature > 85 {
-        bail!("L'ultimo punto deve raggiungere il 100% entro 85 °C");
+        bail!("The last point must reach 100% by 85 °C");
     }
     Ok(())
 }
@@ -48,7 +48,32 @@ pub fn native_points(points: &[Point]) -> Result<[Point; 5]> {
     validate(points)?;
     points
         .try_into()
-        .map_err(|_| anyhow::anyhow!("Overdrive8 richiede esattamente 5 punti"))
+        .map_err(|_| anyhow::anyhow!("Overdrive8 requires exactly 5 points"))
+}
+
+/// Convert a requested curve-speed cutoff into a software gating temperature.
+/// Round down so integer temperature settings never extend the stop region.
+/// Firmware retains control of restart hysteresis and other fan-stop conditions.
+pub fn zero_rpm_stop_temperature(points: &[Point], below_percent: i32) -> Result<i32> {
+    validate(points)?;
+    if !(21..=60).contains(&below_percent) {
+        bail!("Zero RPM threshold must be between 21% and 60%");
+    }
+    if points[0].speed >= below_percent {
+        bail!("Set the first curve point below the Zero RPM threshold ({below_percent}%)");
+    }
+    for pair in points.windows(2) {
+        let [a, b] = [pair[0], pair[1]];
+        if b.speed >= below_percent {
+            let stop = a.temperature
+                + (below_percent - a.speed) * (b.temperature - a.temperature) / (b.speed - a.speed);
+            if stop > 60 {
+                bail!("Zero RPM stop temperature must not exceed 60 °C; lower the threshold or adjust the curve");
+            }
+            return Ok(stop);
+        }
+    }
+    unreachable!("validated curves reach 100%");
 }
 
 /// Host-PWM controller for future sysfs/legacy backends. Never used for native OD8.
@@ -104,6 +129,19 @@ mod tests {
         p[2].speed = 26;
         assert!(validate(&p).is_err());
         assert!(native_points(&p[..4]).is_err());
+    }
+    #[test]
+    fn zero_rpm_cutoff_interpolates_conservatively_and_handles_plateaus() {
+        let mut p = points();
+        p[0].speed = 20;
+        assert_eq!(zero_rpm_stop_temperature(&p, 25).unwrap(), 42);
+        p[1].speed = 20;
+        assert_eq!(zero_rpm_stop_temperature(&p, 25).unwrap(), 51);
+        assert!(zero_rpm_stop_temperature(&p, 20).is_err());
+        assert!(zero_rpm_stop_temperature(&p, 61).is_err());
+        assert!(zero_rpm_stop_temperature(&points(), 25).is_err());
+        p[2].speed = 20;
+        assert!(zero_rpm_stop_temperature(&p, 25).is_err()); // cutoff above 60 °C
     }
     #[test]
     fn stepdown_requires_continuous_cooling_but_rises_immediately() {

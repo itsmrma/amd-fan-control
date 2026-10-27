@@ -29,7 +29,7 @@ Use runtime ADL capabilities. User prioritizes reliability over the control
 mechanism and accepts an always-running app. Native OD8 curve is the initial
 Windows implementation. Never claim a process destructor runs after a forced kill.
 Tray, login autostart, local JSON, system dark mode, and compact Material styling.
-UI in Italian. Alpha packaging requested as a GitHub prerelease.
+UI and all user-facing documentation in English. Alpha packaging requested as a GitHub prerelease.
 
 ## Evidence on Hand
 

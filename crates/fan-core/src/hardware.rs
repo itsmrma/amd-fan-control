@@ -13,6 +13,8 @@ pub struct Adapter {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CurveInfo {
     pub supported: bool,
+    pub zero_rpm_supported: bool,
+    pub zero_rpm_enabled: bool,
     pub current: [Point; 5],
     pub minimum: [Point; 5],
     pub maximum: [Point; 5],
@@ -30,11 +32,11 @@ pub struct Sample {
 impl Sample {
     pub fn validate(&self) -> Result<()> {
         if self.edge_c.is_none() && self.hotspot_c.is_none() {
-            bail!("Nessun sensore termico disponibile");
+            bail!("No temperature sensor available");
         }
         for t in [self.edge_c, self.hotspot_c].into_iter().flatten() {
             if !(1..=125).contains(&t) {
-                bail!("Temperatura non plausibile: {t} °C");
+                bail!("Implausible temperature: {t} °C");
             }
         }
         Ok(())
@@ -52,10 +54,14 @@ pub trait GpuBackend {
     fn select(&mut self, adapter: &Adapter) -> Result<()>;
     fn curve_info(&mut self) -> Result<CurveInfo>;
     fn sample(&mut self) -> Result<Sample>;
-    fn apply_native_curve(&mut self, points: &[Point; 5]) -> Result<()>;
+    fn apply_native_curve(&mut self, points: &[Point; 5], zero_rpm: bool) -> Result<()>;
     fn restore_automatic(&mut self) -> Result<()>;
 
+    fn set_zero_rpm(&mut self, _enabled: bool) -> Result<()> {
+        bail!("Native Zero RPM control is not supported by this backend");
+    }
+
     fn set_pwm(&mut self, _percent: u8) -> Result<()> {
-        bail!("PWM diretto non supportato da questo backend");
+        bail!("Direct PWM is not supported by this backend");
     }
 }

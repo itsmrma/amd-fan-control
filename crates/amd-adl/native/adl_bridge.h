@@ -11,6 +11,8 @@ struct AfcAdapter {
 struct AfcPoint { int32_t temperature; int32_t speed; };
 struct AfcCurveInfo {
     int32_t supported;
+    int32_t zero_rpm_supported;
+    int32_t zero_rpm_enabled;
     AfcPoint current[5];
     AfcPoint minimum[5];
     AfcPoint maximum[5];
@@ -28,8 +30,9 @@ int32_t afc_adapters(void* handle, AfcAdapter* output, int32_t capacity);
 int32_t afc_select(void* handle, int32_t adapter);
 int32_t afc_curve_info(void* handle, AfcCurveInfo* output);
 int32_t afc_sample(void* handle, AfcSample* output);
-int32_t afc_apply(void* handle, const AfcPoint* points);
+int32_t afc_apply(void* handle, const AfcPoint* points, int32_t zero_rpm);
 int32_t afc_reset(void* handle);
+int32_t afc_zero_rpm(void* handle, int32_t enabled);
 const char* afc_error(void* handle);
 }
 

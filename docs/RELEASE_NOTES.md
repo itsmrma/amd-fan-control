@@ -1,23 +1,16 @@
-Prima alpha Windows x64 per AMD Radeon RX 5600 XT.
+Windows x64 alpha, built around the AMD Radeon RX 5600 XT.
 
-- Rust + Tauri v2, frontend TypeScript vanilla con grafico SVG interattivo.
-- Lettura temperatura edge/junction, RPM e rapporto velocità ventola tramite ADL.
-- Applicazione e rilettura di curve native Overdrive8 a cinque punti.
-- Ripristino delle sole impostazioni ventola ai default del driver, tray e autostart.
-- MSI, installer NSIS, ZIP portatile con CLI diagnostica e checksum SHA-256.
-- Logo SVG originale, icone app e supporto tema di sistema.
+- English interface, tray messages, diagnostics, and documentation.
+- Responsive layout, persistent Settings panel, and bundled local logo.
+- Resizable SVG curve, explicit temperature/fan labels, keyboard controls, and dragging without text selection or grab-offset jumps.
+- Five-point native Overdrive8 writes with readback verification.
+- Optional Zero RPM permission below a configurable curve-speed threshold, initially 25%, with a 3 °C re-arm band and hotter-sensor policy.
+- Edge/hotspot temperatures, RPM, and driver-reported speed percentage.
+- Fan-only restoration, tray, autostart, and atomic JSON configuration.
+- MSI, NSIS, and portable GUI/CLI packages with SHA-256 checksums.
 
-La lettura hardware e le capability OD8 sono state verificate su una RX 5600 XT.
-Le scritture ventola richiedono ancora la prova hardware descritta in TESTING.md:
-questa è un'alpha, non una release con affidabilità già certificata.
+Read-only capabilities and telemetry were observed on one RX 5600 XT. Hardware writes and physical stop/restart still require TESTING.md. Other RDNA generations are candidates, not confirmed supported hardware.
 
-Avviare una sola utility di tuning alla volta. All'avvio l'app è in monitoraggio;
-la curva personalizzata richiede un'applicazione esplicita. La chiusura della
-finestra minimizza nella tray; “Esci” tenta il ripristino automatico prima di
-terminare. In caso di kill forzato resta la curva nativa nel driver: il ritorno
-immediato ai default BIOS non è garantito e non è implementato un watchdog esterno.
+Startup is monitoring only. Closing hides to tray. Quit attempts restoration and stays open on failure. Forced termination cannot clean up: the native curve and last Zero RPM flag may remain, and the software gate stops updating. Firmware retains its own fan conditions. No independent watchdog exists.
 
-L'isteresi software e punti in numero variabile sono predisposti nel core, ma non
-esposti dal backend OD8 di questa alpha. Linux ha il trait, non ancora un backend
-sysfs. Il pacchetto portatile richiede Microsoft Edge WebView2 Runtime installato;
-gli installer scaricano il bootstrapper quando necessario. Binari non firmati.
+Zero RPM requires native driver support; permission does not force physical 0 RPM. Linux/sysfs and legacy ADL control backends are not implemented. Portable builds need WebView2 installed. Alpha binaries are unsigned.

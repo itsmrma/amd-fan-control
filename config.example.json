@@ -9,5 +9,6 @@
     { "temperature": 85, "speed": 100 }
   ],
   "polling_ms": 2500,
-  "start_in_tray": false
+  "start_in_tray": false,
+  "zero_rpm_below_percent": null
 }

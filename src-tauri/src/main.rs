@@ -65,19 +65,19 @@ fn main() {
             set_autostart
         ])
         .setup(|app| {
-            let open = MenuItem::with_id(app, "open", "Apri AMD Fan Control", true, None::<&str>)?;
+            let open = MenuItem::with_id(app, "open", "Open AMD Fan Control", true, None::<&str>)?;
             let automatic = MenuItem::with_id(
                 app,
                 "automatic",
-                "Ripristina automatico",
+                "Restore automatic control",
                 true,
                 None::<&str>,
             )?;
-            let quit = MenuItem::with_id(app, "quit", "Esci", true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&open, &automatic, &quit])?;
             TrayIconBuilder::with_id("main")
-                .icon(app.default_window_icon().expect("Icona app").clone())
-                .tooltip("AMD Fan Control · Inizializzazione")
+                .icon(app.default_window_icon().expect("App icon").clone())
+                .tooltip("AMD Fan Control · Initializing")
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
@@ -118,7 +118,7 @@ fn main() {
                 })
                 .build(app)?;
             let path = dirs::config_dir()
-                .ok_or("Directory configurazione assente")?
+                .ok_or("Configuration directory unavailable")?
                 .join("amd-fan-control/config.json");
             let start_in_tray = Config::load(&path)
                 .map(|c| c.start_in_tray)
@@ -136,5 +136,5 @@ fn main() {
             }
         })
         .run(tauri::generate_context!())
-        .expect("Avvio AMD Fan Control");
+        .expect("Starting AMD Fan Control");
 }

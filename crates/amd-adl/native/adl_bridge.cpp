@@ -202,6 +202,13 @@ extern "C" int32_t afc_curve_info(void* h, AfcCurveInfo* output) {
     if (!(init.overdrive8Capabilities & ADL_OD8_FAN_CURVE) || !s.set ||
         init.count <= OD8_FAN_CURVE_SPEED_5 || current.count <= OD8_FAN_CURVE_SPEED_5) return 0;
     output->supported = 1;
+    const int zero = OD8_FAN_ZERORPM_CONTROL;
+    if ((init.overdrive8Capabilities & ADL_OD8_FAN_ZERO_RPM_CONTROL) &&
+        init.count > zero && current.count > zero) {
+        output->zero_rpm_supported = init.od8SettingTable[zero].minValue <= 0 &&
+            init.od8SettingTable[zero].maxValue >= 1;
+        output->zero_rpm_enabled = current.Od8SettingTable[zero];
+    }
     for (int i = 0; i < 5; ++i) {
         int t = OD8_FAN_CURVE_TEMPERATURE_1 + i * 2, v = t + 1;
         output->current[i] = {current.Od8SettingTable[t], current.Od8SettingTable[v]};
@@ -231,9 +238,11 @@ extern "C" int32_t afc_sample(void* h, AfcSample* output) {
     *output = {value(sensors[0]), value(sensors[1]), value(sensors[2]), value(sensors[3])};
     return 0;
 }
-static int write_curve(Session& s, const AfcPoint* points, bool reset) {
+static int write_curve(Session& s, const AfcPoint* points, bool reset, bool zero_rpm = false) {
     AfcCurveInfo info = {};
     if (afc_curve_info(&s, &info) || !info.supported) return s.fail("OD8 fan curve unavailable");
+    if (!reset && zero_rpm && !info.zero_rpm_supported)
+        return s.fail("Native Zero RPM control is not supported");
     ADLOD8SetSetting settings = {}; settings.count = OD8_COUNT;
     ADLOD8CurrentSetting current = {};
     if (s.get_current(current)) return -1;
@@ -250,7 +259,7 @@ static int write_curve(Session& s, const AfcPoint* points, bool reset) {
     ADLOD8InitSetting init = {};
     if (s.get_init(init)) return -1;
     if (init.overdrive8Capabilities & ADL_OD8_FAN_ZERO_RPM_CONTROL)
-        settings.od8SettingTable[OD8_FAN_ZERORPM_CONTROL] = {0, 1, reset ? 1 : 0};
+        settings.od8SettingTable[OD8_FAN_ZERORPM_CONTROL] = {zero_rpm ? 1 : 0, 1, reset ? 1 : 0};
     // Only fan-related entries have requested=1; clocks/voltage/power are untouched.
     if (!s.locked) {
         DWORD wait = WaitForSingleObject(s.control_mutex, 0);
@@ -270,14 +279,32 @@ static int write_curve(Session& s, const AfcPoint* points, bool reset) {
     }
     if ((init.overdrive8Capabilities & ADL_OD8_FAN_ZERO_RPM_CONTROL) &&
         current.Od8SettingTable[OD8_FAN_ZERORPM_CONTROL] !=
-        (reset ? init.od8SettingTable[OD8_FAN_ZERORPM_CONTROL].defaultValue : 0))
+        (reset ? init.od8SettingTable[OD8_FAN_ZERORPM_CONTROL].defaultValue : (zero_rpm ? 1 : 0)))
         return s.fail("Driver did not retain Zero RPM setting");
     if (reset && s.locked) { ReleaseMutex(s.control_mutex); s.locked = false; }
     return 0;
 }
-extern "C" int32_t afc_apply(void* h, const AfcPoint* points) {
-    return write_curve(*static_cast<Session*>(h), points, false);
+extern "C" int32_t afc_apply(void* h, const AfcPoint* points, int32_t zero_rpm) {
+    return write_curve(*static_cast<Session*>(h), points, false, zero_rpm != 0);
 }
 extern "C" int32_t afc_reset(void* h) {
     return write_curve(*static_cast<Session*>(h), nullptr, true);
+}
+
+extern "C" int32_t afc_zero_rpm(void* h, int32_t enabled) {
+    auto& s = *static_cast<Session*>(h);
+    if (!s.locked) return s.fail("Apply a fan curve before changing Zero RPM");
+    AfcCurveInfo info = {};
+    if (afc_curve_info(h, &info) || !info.zero_rpm_supported)
+        return s.fail("Native Zero RPM control is not supported");
+    if (enabled != 0 && enabled != 1) return s.fail("Invalid Zero RPM state");
+    ADLOD8SetSetting settings = {}; settings.count = OD8_COUNT;
+    ADLOD8CurrentSetting current = {};
+    settings.od8SettingTable[OD8_FAN_ZERORPM_CONTROL] = {enabled, 1, 0};
+    int r = s.set(s.context, s.selected, &settings, &current);
+    if (r != ADL_OK) return s.fail("Zero RPM write", r);
+    if (s.get_current(current)) return -1;
+    if (current.count <= OD8_FAN_ZERORPM_CONTROL || current.Od8SettingTable[OD8_FAN_ZERORPM_CONTROL] != enabled)
+        return s.fail("Driver did not retain Zero RPM setting");
+    return 0;
 }
