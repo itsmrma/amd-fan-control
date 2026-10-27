@@ -146,6 +146,11 @@ impl GpuBackend for AdlBackend {
         let mut raw = RawSample::default();
         // SAFETY: bridge fills one initialized C-compatible output structure.
         self.check(unsafe { afc_sample(self.handle.as_ptr(), &mut raw) })?;
+        for t in [raw.edge, raw.hotspot] {
+            if t != -1 && !(1..=125).contains(&t) {
+                bail!("Sensore termico non plausibile: {t} °C");
+            }
+        }
         let valid = |v, min, max| {
             if (min..=max).contains(&v) {
                 Some(v)

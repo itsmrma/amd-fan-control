@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core';
+import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import './style.css';
 
@@ -165,6 +165,12 @@ chart.addEventListener('pointermove', event => {
 for (const name of ['pointerup', 'pointercancel', 'lostpointercapture']) chart.addEventListener(name, () => { dragging = null; });
 
 async function start() {
+  if (!isTauri()) {
+    localError = 'Apri l’app desktop per collegarti alla GPU. La pagina nel browser non ha accesso all’hardware.';
+    el('gpu-name').textContent = 'Connessione GPU disponibile nell’app desktop';
+    controls();
+    return;
+  }
   try {
     await listen<Status>('gpu-status', event => update(event.payload));
     update(await invoke<Status>('get_status'));

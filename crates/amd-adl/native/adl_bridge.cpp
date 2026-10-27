@@ -223,6 +223,8 @@ extern "C" int32_t afc_sample(void* h, AfcSample* output) {
         (!data.sensors[sensors[0]].supported && !data.sensors[sensors[1]].supported))) {
         data = {}; data.size = sizeof(data);
         r = s.legacy_log(s.context, s.selected, &data);
+        if (r == ADL_OK && (data.sensors[sensors[0]].supported || data.sensors[sensors[1]].supported))
+            s.stop_log(); // Do not keep an unusable shared-memory logger alive.
     }
     if (r != ADL_OK) return s.fail("Temperature/PMLog read", r);
     auto value = [&](int id) { return data.sensors[id].supported ? data.sensors[id].value : -1; };
@@ -258,14 +260,18 @@ static int write_curve(Session& s, const AfcPoint* points, bool reset) {
     }
     int r = s.set(s.context, s.selected, &settings, &current);
     if (r != ADL_OK) return s.fail("OD8 fan settings write", r);
-    if (!reset) {
-        if (s.get_current(current)) return -1;
-        for (int i = 0; i < 5; ++i) {
-            int t = OD8_FAN_CURVE_TEMPERATURE_1 + 2 * i;
-            if (current.Od8SettingTable[t] != points[i].temperature || current.Od8SettingTable[t+1] != points[i].speed)
-                return s.fail("Driver did not retain requested curve");
-        }
+    if (s.get_current(current)) return -1;
+    for (int i = 0; i < 5; ++i) {
+        int t = OD8_FAN_CURVE_TEMPERATURE_1 + 2 * i;
+        int expected_t = reset ? init.od8SettingTable[t].defaultValue : points[i].temperature;
+        int expected_v = reset ? init.od8SettingTable[t+1].defaultValue : points[i].speed;
+        if (current.Od8SettingTable[t] != expected_t || current.Od8SettingTable[t+1] != expected_v)
+            return s.fail(reset ? "Driver did not restore default fan curve" : "Driver did not retain requested curve");
     }
+    if ((init.overdrive8Capabilities & ADL_OD8_FAN_ZERO_RPM_CONTROL) &&
+        current.Od8SettingTable[OD8_FAN_ZERORPM_CONTROL] !=
+        (reset ? init.od8SettingTable[OD8_FAN_ZERORPM_CONTROL].defaultValue : 0))
+        return s.fail("Driver did not retain Zero RPM setting");
     if (reset && s.locked) { ReleaseMutex(s.control_mutex); s.locked = false; }
     return 0;
 }

@@ -296,3 +296,144 @@ fn run(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fan_core::curve::Point;
+
+    struct FakeGpu {
+        fail_apply: bool,
+        fail_reset: bool,
+        resets: usize,
+    }
+    impl GpuBackend for FakeGpu {
+        fn adapters(&mut self) -> Result<Vec<Adapter>> {
+            Ok(vec![])
+        }
+        fn select(&mut self, _: &Adapter) -> Result<()> {
+            Ok(())
+        }
+        fn curve_info(&mut self) -> Result<CurveInfo> {
+            Ok(CurveInfo {
+                supported: true,
+                current: native_points(&Config::default().curve)?,
+                minimum: [Point {
+                    temperature: 25,
+                    speed: 20,
+                }; 5],
+                maximum: [Point {
+                    temperature: 100,
+                    speed: 100,
+                }; 5],
+            })
+        }
+        fn sample(&mut self) -> Result<Sample> {
+            Ok(Sample {
+                edge_c: Some(50),
+                ..Sample::default()
+            })
+        }
+        fn apply_native_curve(&mut self, _: &[Point; 5]) -> Result<()> {
+            if self.fail_apply {
+                bail!("driver rejected write after partial apply");
+            }
+            Ok(())
+        }
+        fn restore_automatic(&mut self) -> Result<()> {
+            self.resets += 1;
+            if self.fail_reset {
+                bail!("driver reset failed");
+            }
+            Ok(())
+        }
+    }
+    fn snapshot() -> Snapshot {
+        Snapshot {
+            config: Config::default(),
+            adapters: vec![],
+            selected: None,
+            curve_info: None,
+            sample: Some(Sample {
+                edge_c: Some(50),
+                ..Sample::default()
+            }),
+            sampled_at_ms: None,
+            manual: false,
+            error: None,
+            ready: true,
+        }
+    }
+    #[test]
+    fn failed_apply_attempts_reset_and_clears_manual_only_on_success() {
+        let mut gpu = FakeGpu {
+            fail_apply: true,
+            fail_reset: false,
+            resets: 0,
+        };
+        let mut s = snapshot();
+        assert!(handle(
+            Action::Apply,
+            &mut gpu,
+            std::path::Path::new("unused"),
+            &mut s
+        )
+        .is_err());
+        assert_eq!(gpu.resets, 1);
+        assert!(!s.manual);
+        gpu.fail_reset = true;
+        assert!(handle(
+            Action::Apply,
+            &mut gpu,
+            std::path::Path::new("unused"),
+            &mut s
+        )
+        .is_err());
+        assert!(s.manual); // A failed restore must never be reported as automatic.
+    }
+    #[test]
+    fn failed_reset_prevents_normal_exit() {
+        let mut gpu = FakeGpu {
+            fail_apply: false,
+            fail_reset: true,
+            resets: 0,
+        };
+        let mut s = snapshot();
+        s.manual = true;
+        assert!(handle(
+            Action::Stop,
+            &mut gpu,
+            std::path::Path::new("unused"),
+            &mut s
+        )
+        .is_err());
+        assert!(s.manual);
+        gpu.fail_reset = false;
+        assert!(handle(
+            Action::Stop,
+            &mut gpu,
+            std::path::Path::new("unused"),
+            &mut s
+        )
+        .unwrap());
+        assert!(!s.manual);
+    }
+    #[test]
+    fn cannot_replace_active_profile_or_persist_it_as_manual() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        let mut gpu = FakeGpu {
+            fail_apply: false,
+            fail_reset: false,
+            resets: 0,
+        };
+        let mut s = snapshot();
+        s.config.save(&path).unwrap();
+        s.manual = true;
+        let mut modified = s.config.clone();
+        modified.polling_ms = 10000;
+        assert!(handle(Action::Save(modified), &mut gpu, &path, &mut s).is_err());
+        assert_eq!(Config::load(&path).unwrap().polling_ms, 2500);
+        assert!(s.manual);
+    }
+}
