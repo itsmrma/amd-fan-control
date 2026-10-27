@@ -69,7 +69,7 @@ fn main() {
             let automatic = MenuItem::with_id(
                 app,
                 "automatic",
-                "Restore automatic control",
+                "Use driver default fan settings",
                 true,
                 None::<&str>,
             )?;

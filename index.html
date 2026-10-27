@@ -14,7 +14,10 @@
         <div class="identity"><h1>AMD Fan Control</h1><p id="gpu-name">Connecting to GPU…</p></div>
         <span class="version">0.1 alpha</span>
       </header>
-      <p id="error" role="alert" hidden></p>
+      <div id="error" role="alert" hidden>
+        <p id="error-message"></p>
+        <details id="error-details" hidden><summary>Technical details</summary><p id="error-detail-text"></p></details>
+      </div>
       <section class="telemetry" aria-label="GPU telemetry" aria-live="off">
         <div><span>GPU temperature</span><strong id="edge">— <small>°C</small></strong></div>
         <div><span>Junction / hotspot</span><strong id="hotspot">— <small>°C</small></strong></div>
@@ -24,15 +27,19 @@
       <div class="workspace">
         <section class="curve-panel panel" aria-labelledby="curve-title">
           <div class="section-head"><h2 id="curve-title">Fan curve</h2><span id="mode" role="status">Initializing</span></div>
-          <p class="hint">Drag a point or enter exact values below. Save your changes, then apply the curve.</p>
+          <div class="control-mode">
+            <label class="control-switch" title="Turn on to apply the saved custom curve. Turn off to restore the graphics driver's default fan curve and Zero RPM setting."><input type="checkbox" id="custom-control" role="switch" aria-describedby="control-help" disabled /><span>Use custom fan curve</span></label>
+            <p id="control-help" class="hint">On: your saved curve. Off: restore driver defaults.</p>
+          </div>
+          <p class="hint">Drag points or enter exact values below.</p>
           <div class="chart-labels"><span>Fan speed (%)</span><span>GPU temperature (°C)</span></div>
           <div class="chart-container"><svg id="chart" viewBox="0 0 760 300" role="group" aria-label="Fan curve: temperature in degrees Celsius and fan speed in percent"></svg></div>
+          <p id="zero-legend" class="hint chart-legend" hidden><span class="legend-dash" aria-hidden="true"></span><span id="zero-legend-text"></span></p>
           <div id="points" class="points"></div>
-          <p class="hint safety">Increasing temperatures, non-decreasing fan speeds, and 100% by 85 °C. Driver limits apply.</p>
+          <p class="hint safety">Temperatures must increase; speeds cannot decrease. Reach 100% by 85 °C.</p>
           <div class="actions">
-            <button id="apply" disabled>Apply curve</button>
-            <button id="save" class="secondary" disabled>Save curve</button>
-            <button id="automatic" class="secondary" disabled>Restore automatic</button>
+            <button id="save" disabled title="Save the curve and all settings to this computer. Saving does not change fan control; turn on Use custom fan curve to apply it.">Save curve &amp; settings</button>
+            <button id="automatic" class="secondary" disabled title="Restore the graphics driver's default fan curve and Zero RPM setting now. Your saved custom curve is kept for later use.">Use driver defaults</button>
           </div>
           <p id="feedback" role="status">Waiting for the first temperature reading.</p>
         </section>
@@ -41,23 +48,22 @@
           <div class="settings">
             <fieldset class="fan-stop">
               <legend>Zero RPM</legend>
-              <label class="check"><input type="checkbox" id="zero-rpm" disabled /> Allow fans to stop</label>
+              <label class="check" title="Allow the driver to stop the fans in the shaded temperature region while custom control is on. Firmware may keep them spinning."><input type="checkbox" id="zero-rpm" disabled /> Allow fans to stop</label>
               <label class="threshold-label" for="zero-threshold">When curve speed is below</label>
               <div class="threshold-field"><input type="number" id="zero-threshold" min="21" max="60" step="1" value="25" disabled aria-describedby="zero-feedback" /><span>%</span></div>
               <p id="zero-feedback" class="hint" role="status">Waiting for GPU capabilities.</p>
-              <p class="hint">Uses requested curve speed. Firmware may keep the fans running.</p>
             </fieldset>
             <label for="adapter">Graphics card<select id="adapter" disabled><option value="">Select GPU</option></select></label>
             <label for="polling">Refresh interval<select id="polling" disabled><option value="1000">1 second</option><option value="2000">2 seconds</option><option value="2500" selected>2.5 seconds</option><option value="3000">3 seconds</option><option value="5000">5 seconds</option><option value="10000">10 seconds</option></select></label>
-            <label class="check"><input type="checkbox" id="autostart" disabled /> Launch with Windows</label>
-            <label class="check"><input type="checkbox" id="start-tray" disabled /> Start in system tray</label>
+            <label class="check" title="Start the app when you sign in to Windows. This setting takes effect immediately; custom fan control still starts off."><input type="checkbox" id="autostart" disabled /> Launch with Windows</label>
+            <label class="check" title="Open in the notification area instead of showing this window on the next launch. Save to keep this setting."><input type="checkbox" id="start-tray" disabled /> Start in system tray</label>
           </div>
-          <div class="actions"><button id="save-settings" class="secondary" disabled>Save settings</button></div>
+          <div class="actions"><button id="save-settings" class="secondary" disabled title="Save all settings and the edited curve to this computer. This does not apply the curve to the GPU.">Save all changes</button></div>
           <p id="settings-feedback" role="status"></p>
-          <p class="hint">The app starts in monitoring mode. Apply your saved curve to enable custom control.</p>
+          <p class="hint">Custom control starts off each time you open the app.</p>
         </aside>
       </div>
-      <footer><span>Closing the window keeps the app in the system tray.</span><span>Quit from the tray menu to restore automatic control.</span></footer>
+      <footer><span>Closing the window keeps the app in the system tray.</span><span>Quit from the tray menu to restore driver defaults.</span></footer>
     </main>
     <script type="module" src="/src/main.ts"></script>
   </body>

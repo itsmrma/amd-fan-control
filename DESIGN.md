@@ -157,7 +157,7 @@ Use the local **Segoe UI, system-ui, sans-serif** stack throughout. There is no 
 
 ## Layout
 
-The Operate surface fills the window with fluid 20–40px page padding and no maximum content width. The header pairs a 44px local fan mark with the title, selected GPU, and alpha version. Four telemetry columns precede the workspace. At 1120px and above, the curve shares the workspace with a 300px Settings panel (340px above 1600px). Narrower windows stack the panels. Settings stay visible without a disclosure arrow.
+The Operate surface fills the window with fluid 16–32px page padding and no maximum content width, with tighter vertical spacing on shorter desktops. The header pairs a 44px local fan mark with the title, selected GPU, and alpha version. Four telemetry columns precede the workspace. At 900px and above, the curve shares the workspace with a 300px Settings panel (340px above 1600px). Narrower windows stack the panels. Settings stay visible without a disclosure arrow; GPU and refresh controls share a row.
 
 The chart grows horizontally and vertically with available space. Its SVG is positioned inside an independently sized flex container to avoid intrinsic SVG aspect-ratio feedback during resize. ResizeObserver updates the viewBox to CSS-pixel dimensions, retaining legible labels and 48px pointer targets. Five fieldsets identify the curve points, each with distinct **Temp (°C)** and **Fan (%)** labels. Point values use tabular numerals.
 
@@ -175,7 +175,9 @@ Use gently rounded outlined fields, slightly rounder buttons, and the larger pan
 
 ### Buttons
 
-The filled primary button applies the manual curve. Secondary outlined buttons save the curve, restore automatic/default control, and save settings. Both variants use button typography, a 44px minimum height, button radius, and frontmatter padding. Secondary borders use the theme line color. Disabled buttons have 0.45 opacity, a default cursor, and no hover filter; keyboard focus uses the shared outline.
+The filled primary button saves the curve and settings. Secondary outlined buttons restore driver defaults and save all changes from Settings. All buttons include native hover help that explains their effects. Both variants use button typography, a 44px minimum height, button radius, and frontmatter padding. Secondary borders use the theme line color. Disabled buttons have 0.45 opacity, a default cursor, and no hover filter; keyboard focus uses the shared outline.
+
+A labeled **Use custom fan curve** switch applies the saved curve when enabled and restores driver defaults when disabled. Nearby text explains both outcomes. The switch follows confirmed worker state and remains available for restoration when telemetry or curve capability is lost. Unsaved changes block activation; saving alone does not control the fans. The startup mode reads **Custom control off**, since monitoring does not confirm existing driver settings are defaults.
 
 ### Curve panel and chart
 
@@ -183,19 +185,19 @@ The panel uses a flat bordered surface. The SVG has temperature references from 
 
 Dragging captures the pointer on the stable SVG root, retains the initial grab offset, updates existing point nodes, and suppresses text selection. Pointer release, cancellation, lost capture, or window blur ends the gesture. Numeric inputs remain text-selectable. Chart points are keyboard-focusable: left/right adjusts temperature, up/down adjusts speed, and Shift uses steps of five. Numeric fields provide another keyboard alternative.
 
-The optional Zero RPM region uses the soft accent fill and a dashed cutoff line. It represents permission to stop below a derived temperature, not a promise of physical 0 RPM. The plotted line remains the requested native curve. The Settings panel describes the cutoff and re-arm band.
+The optional Zero RPM region uses the soft accent fill and a dashed cutoff line. A visible legend names the cutoff temperature, shaded fan-stop region, firmware discretion, and restriction to custom control. It represents permission to stop below a derived temperature, not a promise of physical 0 RPM. The plotted line remains the requested native curve. The Settings panel describes the cutoff and re-arm band.
 
 Draft changes are locked while a command is pending or custom control is active. Save-before-apply and unsaved state are explicit. No separate saved/applied curve is overlaid.
 
 ### Telemetry and status
 
-Readings use large tabular values with muted units and labels. Unavailable or stale readings use an em dash. The mode badge distinguishes monitoring from an active custom curve through text. Error messages remain in a bordered `role="alert"` banner; command and settings outcomes have separate status regions. Preserve meaningful text alongside color.
+Readings use large tabular values with muted units and labels. Unavailable or stale readings use an em dash. The mode badge distinguishes inactive custom control from an active custom curve through text. Error messages remain in a bordered `role="alert"` banner, with technical driver diagnostics inside a disclosure. Recovery messages state whether driver defaults were restored and keep failed restoration explicit. Command and settings outcomes have separate status regions. Preserve meaningful text alongside color.
 
 ### Fields and settings
 
 Fields use inherited typography, theme panel backgrounds, single-pixel borders, and 44px minimum height. Checkboxes are 18px with the accent color. Settings include Zero RPM permission and its percentage threshold (initially 25%), GPU selection, refresh interval, Windows autostart, and start in tray. Unsupported Zero RPM remains unavailable, but an already enabled draft can always be switched off for recovery.
 
-**Save settings** and **Save curve** save the whole draft, with unsaved/saving/saved/error feedback. Autostart is an immediate OS command with pending state and rollback on failure; the other settings require saving. Existing profiles without a Zero RPM value preserve disabled behavior.
+**Save all changes** and **Save curve & settings** save the whole draft, with unsaved/saving/saved/error feedback. Autostart is an immediate OS command with pending state and rollback on failure; the other settings require saving. Existing profiles without a Zero RPM value preserve disabled behavior.
 
 ## Do's and Don'ts
 

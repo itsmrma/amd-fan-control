@@ -47,7 +47,7 @@ A named Windows mutex prevents two utility sessions writing the same GPU. It can
 | Event | Behavior |
 | --- | --- |
 | Close window | Hide to tray; worker continues |
-| Restore automatic | Request fan-only driver defaults |
+| Switch custom control off / Use driver defaults | Request fan-only driver defaults; retain the saved custom curve |
 | Quit from tray | Restore after custom control; failure blocks ordinary exit |
 | Read/write failure | Invalidate telemetry and attempt restoration |
 | Rust unwind | Drop attempts cleanup; no guarantee after abort/access violation |
@@ -60,7 +60,9 @@ No independent watchdog exists. Fan-only reset is not a formal guarantee of auto
 
 Configuration validates schema, curve invariants, interval, and Zero RPM policy. Same-directory temporary files, `sync_all`, and atomic replacement preserve the previous save on failure. Corrupt JSON is preserved and reported. No persisted manual-control flag exists.
 
-The English frontend uses local fonts, SVG, and system light/dark appearance. Settings remain visible below or beside the curve. ResizeObserver keeps chart coordinates and hit areas in CSS pixels. Dragging captures the pointer on the stable SVG root, preserves grab offset, and suppresses text selection. Keyboard and numeric editing are alternatives. Draft changes are locked during custom control.
+The English frontend uses local fonts, SVG, and system light/dark appearance. Settings remain visible below or beside the curve. Desktop layout sizes the chart within the viewport; narrow/short windows retain scrolling for reachable content. ResizeObserver keeps chart coordinates and hit areas in CSS pixels. Dragging captures the pointer on the stable SVG root, preserves grab offset, and suppresses text selection. Keyboard and numeric editing are alternatives. Draft changes are locked during custom control.
+
+The custom-control switch follows the worker's confirmed manual state; command failures refresh the snapshot before unlocking controls. Switching off remains available without telemetry or curve capability. Recovery errors describe the operation, the confirmed restoration outcome, and the next action. Driver diagnostics appear under a separate **Technical details** disclosure. ADL -8 on a Zero RPM transition is explained as an unsupported operation; fan-stop write support is not inferred from readable capabilities.
 
 The frontend has no filesystem/shell access or remote dependencies. SVGs are emitted as local files (`assetsInlineLimit: 0`) because the desktop CSP disallows data URLs. Autostart reads OS state through dedicated commands.
 

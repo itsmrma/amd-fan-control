@@ -33,7 +33,8 @@ Older GCN cards (Polaris/Vega), integrated graphics, laptop-controlled fans, and
 
 - Resizable SVG curve editor with dragging, keyboard adjustment, and separate temperature/fan-speed labels.
 - GPU edge temperature, junction/hotspot, fan RPM, and driver-reported speed percentage.
-- Explicit save/apply and driver readback verification.
+- A custom-curve switch: on applies your saved curve; off restores driver fan defaults, with driver readback verification.
+- Descriptive button labels and hover help, plus a labeled Zero RPM cutoff on the chart.
 - Optional **Zero RPM below a configurable curve-speed threshold**, initially **25%**.
 - Persistent Settings panel, beside the curve in wide windows and below it in smaller windows.
 - Automatic fan-default restoration, tray, optional Windows autostart, and start in tray.
@@ -49,22 +50,24 @@ Download from [Releases](https://github.com/itsmrma/amd-fan-control/releases). I
 1. Close MSI Afterburner and disable other fan controllers, including Radeon Software fan tuning.
 2. Open the app and check temperatures and RPM. Select your GPU in **Settings** if necessary.
 3. Drag the five points or edit **Temp (°C)** and **Fan (%)**. Focus a chart point to use left/right for temperature and up/down for speed; Shift uses steps of five.
-4. Click **Save curve**, then **Apply curve**. Saving alone does not change the fans.
-5. Click **Restore automatic** to request the driver's fan defaults.
+4. Click **Save curve & settings**, then turn on **Use custom fan curve**. Saving alone does not change the fans.
+5. Turn the switch off, or click **Use driver defaults**, to restore the driver's fan curve and Zero RPM defaults. Your saved curve is kept.
 
 Closing the window keeps the app in the tray. **Quit** from the tray menu attempts restoration before exiting; if it fails, the app stays open and shows the error.
 
-The app starts in monitoring mode and never silently reapplies a curve. Configuration lives at `%APPDATA%\amd-fan-control\config.json`. Windows autostart takes effect immediately; other settings require **Save settings**, which saves the whole draft including the curve.
+The app starts in monitoring mode with custom control off and never silently reapplies a curve. It does not reset existing GPU settings at startup. Configuration lives at `%APPDATA%\amd-fan-control\config.json`. Windows autostart takes effect immediately; other settings require **Save all changes**, which saves the whole draft including the curve.
 
 ### Zero RPM
 
 Enable **Allow fans to stop** and set **When curve speed is below**. The initial threshold is **25%**. Set the first point below that value, for example **40 °C / 20%**, so the curve enters the fan-stop region. Existing profiles keep Zero RPM disabled until you enable and save it.
 
-The threshold refers to **speed requested by the curve**, not measured fan percentage. The app interpolates a temperature cutoff, rounded down to whole degrees. To avoid cycling, it requests fan stop only when the hotter available sensor is more than 3 °C below that cutoff, and disables permission at the cutoff. The cutoff cannot exceed 60 °C. The shaded region shows the cutoff; the line remains the requested native curve.
+The threshold refers to **speed requested by the curve**, not measured fan percentage. The app interpolates a temperature cutoff, rounded down to whole degrees. To avoid cycling, it requests fan stop only when the hotter available sensor is more than 3 °C below that cutoff, and disables permission at the cutoff. The cutoff cannot exceed 60 °C. The dashed line marks this cutoff and the shaded region shows where fans may stop; both are explained below the chart. This policy applies only while custom control is on. The solid line remains the requested native curve.
 
 The worker toggles native Zero RPM permission at polling intervals and verifies it. **This requests fan stop; it does not force electrical 0% PWM.** Firmware may keep the fans running because of temperature, power, or restart conditions. Confirm actual stopping through RPM; an enabled flag is not proof of 0 RPM. Unsupported drivers leave this option unavailable.
 
 Read-only probing confirmed the local RX 5600 XT's toggle but no adjustable native stop-temperature range. The running worker therefore manages the percentage threshold, while the native curve and firmware protections remain in place.
+
+If the driver rejects a Zero RPM change with **ADL -8** (operation not supported), the app attempts to restore driver defaults and states whether that succeeded. Turn off **Allow fans to stop**, save, and try the custom curve again. A readable capability does not guarantee the driver accepts writes. Expand **Technical details** to see the driver error. If restoration fails, keep the app open and use **Use driver defaults** to retry.
 
 ## Alpha limitations
 
@@ -98,6 +101,8 @@ cargo run --locked -p fan-cli -- probe 'pci:41:0:0'
 
 ```powershell
 npm run build
+npx playwright install chromium
+npm run test:ui
 cargo fmt --all --check
 cargo test --locked --workspace
 cargo clippy --locked --workspace --all-targets -- -D warnings

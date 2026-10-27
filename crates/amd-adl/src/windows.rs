@@ -185,7 +185,10 @@ impl GpuBackend for AdlBackend {
             .check(unsafe { afc_apply(self.handle.as_ptr(), points.as_ptr(), i32::from(zero_rpm)) })
         {
             let reset = self.restore_automatic();
-            bail!("{e}; automatic restore: {reset:?}");
+            match reset {
+                Ok(()) => bail!("{e}; driver default fan settings restored"),
+                Err(reset) => bail!("{e}; restoring driver default fan settings failed: {reset:#}"),
+            }
         }
         Ok(())
     }

@@ -151,6 +151,24 @@ fn restore(backend: &mut dyn GpuBackend, s: &mut Snapshot) -> Result<()> {
     Ok(())
 }
 
+fn restore_after_failure(
+    backend: &mut dyn GpuBackend,
+    s: &mut Snapshot,
+    reason: &str,
+    details: Option<&str>,
+) -> String {
+    match restore(backend, s) {
+        Ok(()) => format!(
+            "{reason} Driver default fan settings restored.{}",
+            details.map_or(String::new(), |d| format!("\n\nTechnical details: {d}"))
+        ),
+        Err(e) => format!(
+            "{reason} Could not confirm driver default fan settings. Custom control may still be active. Use driver defaults to try again; keep the app open.\n\nTechnical details: {}Restore: {e:#}",
+            details.map_or(String::new(), |d| format!("{d}\n"))
+        ),
+    }
+}
+
 fn validate_zero_rpm(s: &Snapshot) -> Result<()> {
     if s.config.zero_rpm_stop_temperature()?.is_some()
         && !s
@@ -184,6 +202,18 @@ fn update_zero_rpm(backend: &mut dyn GpuBackend, s: &mut Snapshot, sample: &Samp
     Ok(())
 }
 
+fn check_zero_rpm(backend: &mut dyn GpuBackend, s: &mut Snapshot, sample: &Sample) {
+    if let Err(e) = update_zero_rpm(backend, s, sample) {
+        let details = format!("{e:#}");
+        let reason = if details.contains("ADL -8") {
+            "The GPU driver does not support this Zero RPM change. Turn off ‘Allow fans to stop’, save, then try your custom curve again."
+        } else {
+            "The app could not change the fan-stop setting. Turn off ‘Allow fans to stop’, save, then try your custom curve again."
+        };
+        s.error = Some(restore_after_failure(backend, s, reason, Some(&details)));
+    }
+}
+
 fn handle(
     action: Action,
     backend: &mut dyn GpuBackend,
@@ -194,7 +224,7 @@ fn handle(
         Action::Save(config) => {
             config.validate()?;
             if s.manual {
-                bail!("Restore automatic control before editing settings");
+                bail!("Turn custom control off before editing settings");
             }
             // Select using a temporary snapshot; a failed selection does not replace the saved config.
             let mut next = s.clone();
@@ -229,12 +259,21 @@ fn handle(
             {
                 Ok(info) => s.curve_info = Some(info),
                 Err(e) => {
-                    let reset = restore(backend, s);
-                    bail!("{e:#}; automatic restore: {reset:?}");
+                    bail!(
+                        "{}",
+                        restore_after_failure(
+                            backend,
+                            s,
+                            "The custom fan curve could not be applied.",
+                            Some(&format!("{e:#}"))
+                        )
+                    );
                 }
             }
         }
-        Action::Automatic => restore(backend, s)?,
+        Action::Automatic => {
+            restore(backend, s).context("Could not confirm driver default fan settings. Use driver defaults to try again; keep the app open")?;
+        }
         Action::Stop => {
             if s.manual {
                 restore(backend, s)?;
@@ -286,9 +325,11 @@ fn run(
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 let now = Instant::now();
                 if s.manual && now.duration_since(last_tick) > Duration::from_secs(15) {
-                    let reset = restore(backend.as_mut(), &mut s);
-                    s.error = Some(format!(
-                        "Resumed after sleep or a polling stall: automatic restore {reset:?}"
+                    s.error = Some(restore_after_failure(
+                        backend.as_mut(),
+                        &mut s,
+                        "Custom control stopped after sleep or a pause in GPU readings.",
+                        None,
                     ));
                 }
                 last_tick = now;
@@ -300,18 +341,15 @@ fn run(
                     Ok(sample) => {
                         failures = 0;
                         if s.manual && sample.too_hot() {
-                            let reset = restore(backend.as_mut(), &mut s);
-                            s.error = Some(format!(
-                                "Temperature threshold reached: automatic restore {reset:?}"
+                            s.error = Some(restore_after_failure(
+                                backend.as_mut(),
+                                &mut s,
+                                "The GPU reached the app's temperature safety limit.",
+                                None,
                             ));
                         }
                         if s.manual {
-                            if let Err(e) = update_zero_rpm(backend.as_mut(), &mut s, &sample) {
-                                let reset = restore(backend.as_mut(), &mut s);
-                                s.error = Some(format!(
-                                    "Zero RPM control failed: {e:#}; automatic restore: {reset:?}"
-                                ));
-                            }
+                            check_zero_rpm(backend.as_mut(), &mut s, &sample);
                         }
                         s.sample = Some(sample);
                         s.sampled_at_ms = SystemTime::now()
@@ -325,8 +363,12 @@ fn run(
                         s.sampled_at_ms = None;
                         s.error = Some(format!("Telemetry unavailable: {e:#}"));
                         if s.manual && failures >= 2 {
-                            let reset = restore(backend.as_mut(), &mut s);
-                            s.error = Some(format!("Telemetry lost. Automatic restore: {reset:?}"));
+                            s.error = Some(restore_after_failure(
+                                backend.as_mut(),
+                                &mut s,
+                                "GPU readings were lost.",
+                                Some(&format!("{e:#}")),
+                            ));
                         }
                     }
                 }
@@ -341,8 +383,12 @@ fn run(
                                     .as_ref()
                                     .is_some_and(|info| info.zero_rpm_enabled)
                     }) {
-                        let reset = restore(backend.as_mut(), &mut s);
-                        s.error = Some(format!("Curve changed by the driver or another app. Automatic restore: {reset:?}"));
+                        s.error = Some(restore_after_failure(
+                            backend.as_mut(),
+                            &mut s,
+                            "Fan settings changed in the driver or another app.",
+                            None,
+                        ));
                     }
                 }
             }
@@ -424,6 +470,8 @@ mod tests {
         info: CurveInfo,
         writes: Vec<bool>,
         reject: bool,
+        fail_write: bool,
+        fail_reset: bool,
     }
     impl GpuBackend for GateGpu {
         fn adapters(&mut self) -> Result<Vec<Adapter>> {
@@ -448,12 +496,18 @@ mod tests {
         }
         fn set_zero_rpm(&mut self, enabled: bool) -> Result<()> {
             self.writes.push(enabled);
+            if self.fail_write {
+                bail!("Zero RPM write (ADL -8)");
+            }
             if !self.reject {
                 self.info.zero_rpm_enabled = enabled;
             }
             Ok(())
         }
         fn restore_automatic(&mut self) -> Result<()> {
+            if self.fail_reset {
+                bail!("driver reset failed");
+            }
             self.info.zero_rpm_enabled = false;
             Ok(())
         }
@@ -475,9 +529,61 @@ mod tests {
                 info,
                 writes: vec![],
                 reject: false,
+                fail_write: false,
+                fail_reset: false,
             },
             s,
         )
+    }
+    #[test]
+    fn zero_rpm_failure_explains_rejection_and_reports_restore_outcome() {
+        for fail_reset in [false, true] {
+            let (mut gpu, mut s) = gate_setup();
+            s.manual = true;
+            gpu.fail_write = true;
+            gpu.fail_reset = fail_reset;
+            let cool = Sample {
+                edge_c: Some(38),
+                ..Sample::default()
+            };
+            check_zero_rpm(&mut gpu, &mut s, &cool);
+            let error = s.error.as_ref().unwrap();
+            assert!(error.starts_with("The GPU driver does not support this Zero RPM change."));
+            assert!(error.contains("Technical details: Zero RPM write (ADL -8)"));
+            assert!(!error.contains("Ok(())"));
+            assert!(!error.contains("Err("));
+            assert_eq!(s.manual, fail_reset);
+            if fail_reset {
+                assert!(error.contains("Custom control may still be active"));
+                assert!(!error.contains("Driver default fan settings restored"));
+                assert!(error.contains("Restore: driver reset failed"));
+            } else {
+                assert!(error.contains("Driver default fan settings restored"));
+                assert!(error.contains("Allow fans to stop"));
+            }
+        }
+    }
+    #[test]
+    fn switching_off_restores_defaults_without_discarding_the_saved_curve() {
+        let (mut gpu, mut s) = gate_setup();
+        let saved = s.config.curve.clone();
+        handle(
+            Action::Apply,
+            &mut gpu,
+            std::path::Path::new("unused"),
+            &mut s,
+        )
+        .unwrap();
+        assert!(s.manual);
+        handle(
+            Action::Automatic,
+            &mut gpu,
+            std::path::Path::new("unused"),
+            &mut s,
+        )
+        .unwrap();
+        assert!(!s.manual);
+        assert_eq!(s.config.curve, saved);
     }
     #[test]
     fn zero_rpm_transitions_only_when_needed_and_keeps_the_native_curve() {
@@ -536,13 +642,19 @@ mod tests {
             resets: 0,
         };
         let mut s = snapshot();
-        assert!(handle(
+        let error = handle(
             Action::Apply,
             &mut gpu,
             std::path::Path::new("unused"),
-            &mut s
+            &mut s,
         )
-        .is_err());
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("Driver default fan settings restored"),
+            "{error}"
+        );
+        assert!(!error.contains("Ok(())"), "{error}");
         assert_eq!(gpu.resets, 1);
         assert!(!s.manual);
         gpu.fail_reset = true;

@@ -37,9 +37,9 @@ Automatic means ADL fan defaults. Failed reset is reported as an error. If the d
 2. Resize to 680 × 650, 920 × 790, 1366 × 900, and maximized. Check both themes, logo, chart sizing, explicit input labels, and Settings below/beside the curve. No horizontal page overflow should appear.
 3. Drag each point from its center and hit-area edge. It should not jump on pointer-down or select text. Drag beyond the graph and release; constraints must hold. Pointer cancellation or window blur must end dragging.
 4. Edit numbers after dragging, and use chart arrow keys/Shift. Reject duplicate temperatures, decreasing speeds, invalid values, and a last point below 100% or above 85 °C.
-5. Save/apply, verify independently, restore automatic, and check defaults.
+5. Save with **Save curve & settings**, turn on **Use custom fan curve**, and verify independently. Turn the switch off and check driver defaults, including Zero RPM. The saved custom curve must be kept. **Use driver defaults** must also work as an explicit recovery command.
 6. Apply, close/reopen via tray, and quit. Verify restoration before exit.
-7. Test Windows autostart separately from start in tray. Save the latter with **Save settings**. Restarting must not silently apply the curve.
+7. Test Windows autostart separately from start in tray. Save the latter with **Save all changes**. Restarting must not silently apply the curve.
 8. After these checks, evaluate sleep/resume, driver resets, external changes, and forced termination. Record the state left in the driver.
 
 ## Zero RPM below 25%
@@ -57,6 +57,8 @@ Physical stop/restart validation remains pending. Do not describe this as hardwa
 
 ```powershell
 npm run build
+npx playwright install chromium
+npm run test:ui
 cargo fmt --all --check
 cargo test --locked --workspace
 cargo clippy --locked --workspace --all-targets -- -D warnings

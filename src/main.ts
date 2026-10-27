@@ -101,6 +101,8 @@ function renderCurve() {
     region.append(svg('rect', { x: left, y: top, width: Math.max(0, x(stop) - left), height: plotHeight(), class: 'zero-zone' }));
     region.append(svg('line', { x1: x(stop), x2: x(stop), y1: top, y2: y(0), class: 'zero-line' }));
   }
+  el('zero-legend').hidden = stop === null || !valid;
+  el('zero-legend-text').textContent = `Dashed line: fans may stop below ${stop} °C (shaded). Firmware decides; custom control only.`;
   const caption = chart.querySelector('#point-caption')!;
   caption.textContent = '';
   if (dragging) {
@@ -141,12 +143,12 @@ function zeroFeedback() {
     : !available ? 'Native Zero RPM is unavailable with this GPU/driver.'
     : draft?.zero_rpm_below_percent == null ? 'Disabled for custom control.'
     : stop === null ? 'Set a curve point below the threshold. The cutoff must be at or below 60 °C.'
-    : `Fan-stop region: below ${stop} °C. Re-arms below ${stop - 3} °C using the hotter sensor.${state?.manual ? active ? ' Fan stop requested.' : ' Fans running.' : ''}`;
+    : `Fans may stop below ${stop} °C. Stop permission returns below ${stop - 3} °C, using the hotter sensor.${state?.manual ? active ? ' Stop requested.' : ' Stop not requested.' : ''}`;
 }
 function changed() {
   dirty = true; localError = null;
   el('settings-feedback').textContent = 'Unsaved changes.';
-  el('feedback').textContent = 'Unsaved changes. Save before applying the curve.';
+  el('feedback').textContent = 'Unsaved changes. Save before turning custom control on.';
   controls();
 }
 function stale() { return !state?.sampled_at_ms || Date.now() - state.sampled_at_ms > Math.max(12000, state.config.polling_ms * 3); }
@@ -156,8 +158,10 @@ function controls() {
   const writable = !!state?.ready && !!state.selected && !!state.curve_info?.supported;
   el<HTMLButtonElement>('save').disabled = locked || !draft || !dirty;
   el<HTMLButtonElement>('save-settings').disabled = locked || !draft || !dirty;
-  el<HTMLButtonElement>('apply').disabled = pending || !writable || dirty || !!state?.manual || !state?.sample || stale();
-  el<HTMLButtonElement>('automatic').disabled = pending || !writable;
+  input('custom-control').checked = !!state?.manual;
+  // Turning off remains available even with missing telemetry or changed capabilities.
+  input('custom-control').disabled = pending || (state?.manual ? !state.ready || !state.selected : !writable || dirty || !state?.sample || stale());
+  el<HTMLButtonElement>('automatic').disabled = pending || !state?.ready || !state.selected;
   el<HTMLSelectElement>('adapter').disabled = locked;
   el<HTMLSelectElement>('polling').disabled = locked;
   input('start-tray').disabled = locked;
@@ -165,9 +169,15 @@ function controls() {
   input('zero-rpm').disabled = locked || (!state?.curve_info?.zero_rpm_supported && !input('zero-rpm').checked);
   input('zero-threshold').disabled = locked || !input('zero-rpm').checked;
   for (const hit of chart.querySelectorAll('.hit')) hit.setAttribute('aria-disabled', String(locked));
-  el('mode').textContent = state?.manual ? 'Custom curve active' : state?.ready ? 'Monitoring' : 'Connecting';
-  const error = localError ?? state?.error ?? (state?.sampled_at_ms && stale() ? 'Telemetry is out of date. Restore automatic control and restart the app.' : null);
-  el('error').hidden = !error; el('error').textContent = error ?? '';
+  el('mode').textContent = state?.manual ? 'Custom curve active' : state?.ready ? 'Custom control off' : 'Connecting';
+  el('control-help').textContent = pending ? 'Updating fan control…' : state?.manual
+    ? 'Your saved curve controls the fans. Turn off to restore driver defaults.'
+    : dirty ? 'Save your changes before turning on. Turn off restores driver defaults.'
+    : 'On: saved curve · Off: driver defaults.';
+  const error = localError ?? state?.error ?? (state?.sampled_at_ms && stale() ? 'GPU readings are out of date. Use driver defaults, then restart the app.' : null);
+  const [message, details] = (error ?? '').split('\n\nTechnical details: ');
+  el('error').hidden = !error; el('error-message').textContent = message;
+  el('error-details').hidden = !details; el('error-detail-text').textContent = details ?? '';
   zeroFeedback();
 }
 
@@ -195,7 +205,7 @@ function update(s: Status) {
     const small = document.createElement('small'); small.textContent = unit;
     el(id).replaceChildren(document.createTextNode(`${value ?? '—'} `), small);
   }
-  if (!dirty && !pending) el('feedback').textContent = s.manual ? 'Curve verified in the driver. Restore automatic control before editing.' : s.curve_info?.supported ? 'Native fan curve available. Save your changes before applying.' : 'Fan curve control is unavailable with this driver.';
+  if (!dirty && !pending) el('feedback').textContent = s.manual ? 'Curve verified in the driver. Turn custom control off before editing.' : s.curve_info?.supported ? 'Custom control is off. Your saved curve is ready to use.' : 'Fan curve control is unavailable with this driver.';
   controls();
 }
 
@@ -204,7 +214,11 @@ async function command(name: string, args?: Record<string, unknown>) {
   try {
     await invoke(name, args);
     update(await invoke<Status>('get_status'));
-  } catch (e) { localError = String(e); }
+  } catch (e) {
+    localError = String(e);
+    // The command may have partially succeeded or restored defaults after a failure.
+    try { update(await invoke<Status>('get_status')); } catch { /* Keep the last confirmed state. */ }
+  }
   finally { pending = false; if (state) update(state); else controls(); }
 }
 async function saveDraft() {
@@ -215,15 +229,21 @@ async function saveDraft() {
     await invoke('save_config', { config: draft });
     const s = await invoke<Status>('get_status');
     dirty = false; draft = null; update(s);
-    el('feedback').textContent = 'Configuration saved. You can now apply the curve.';
+    el('feedback').textContent = 'Curve and settings saved. Turn custom control on to use the curve.';
     el('settings-feedback').textContent = 'Settings saved.';
   } catch (e) { localError = String(e); el('settings-feedback').textContent = `Could not save: ${e}`; }
   finally { pending = false; controls(); }
 }
 el('save').addEventListener('click', saveDraft);
 el('save-settings').addEventListener('click', saveDraft);
-el('apply').addEventListener('click', () => command('apply_curve'));
-el('automatic').addEventListener('click', () => command('restore_automatic'));
+input('custom-control').addEventListener('change', () => {
+  const enabled = input('custom-control').checked;
+  void command(enabled ? 'apply_curve' : 'restore_automatic');
+});
+el('automatic').addEventListener('click', async () => {
+  await command('restore_automatic');
+  if (!localError && !state?.error) el('feedback').textContent = 'Driver default fan settings restored. Your saved custom curve is kept.';
+});
 el('adapter').addEventListener('change', () => { if (draft) { draft.adapter_id = el<HTMLSelectElement>('adapter').value || null; changed(); } });
 el('polling').addEventListener('change', () => { if (draft) { draft.polling_ms = Number(el<HTMLSelectElement>('polling').value); changed(); } });
 input('start-tray').addEventListener('change', () => { if (draft) { draft.start_in_tray = input('start-tray').checked; changed(); } });
