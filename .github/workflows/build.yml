@@ -1,0 +1,94 @@
+name: Build and release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  core:
+    name: Portable Rust core
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo test --locked -p fan-core -p amd-adl -p fan-cli
+
+  windows:
+    name: Windows x64
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: npm ci
+      - run: npm run build
+      - name: Rust tests (no hardware writes)
+        run: cargo test --locked --workspace
+      - name: Rust lint
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - name: Build MSI and NSIS installer
+        run: npm run tauri build -- --bundles msi,nsis
+      - name: Build diagnostic CLI
+        run: cargo build --locked --release -p fan-cli
+      - name: Assemble portable package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path portable | Out-Null
+          Copy-Item target/release/amd-fan-control.exe,target/release/fan-cli.exe portable/
+          Copy-Item README.md,LICENSE,THIRD_PARTY_NOTICES.md portable/
+          Copy-Item docs/TESTING.md portable/TESTING.md
+          Copy-Item config.example.json portable/
+          Compress-Archive -Path portable/* -DestinationPath amd-fan-control-windows-x64-portable.zip
+          New-Item -ItemType Directory -Path release | Out-Null
+          Copy-Item target/release/bundle/msi/*.msi release/
+          Copy-Item target/release/bundle/nsis/*-setup.exe release/
+          Copy-Item amd-fan-control-windows-x64-portable.zip release/
+          Get-ChildItem release -File | ForEach-Object {
+            $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash.ToLowerInvariant()
+            "$hash  $($_.Name)" | Add-Content -Path release/SHA256SUMS.txt -Encoding utf8
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64
+          path: release/*
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Publish prerelease
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [core, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-x64
+          path: release
+      - name: Publish alpha assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" release/* --verify-tag --prerelease --title "AMD Fan Control $GITHUB_REF_NAME" --notes-file docs/RELEASE_NOTES.md

@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "adapter_id": null,
+  "curve": [
+    { "temperature": 40, "speed": 30 },
+    { "temperature": 50, "speed": 40 },
+    { "temperature": 65, "speed": 60 },
+    { "temperature": 75, "speed": 80 },
+    { "temperature": 85, "speed": 100 }
+  ],
+  "polling_ms": 2500,
+  "start_in_tray": false
+}

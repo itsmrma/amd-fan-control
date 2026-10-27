@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="it">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <title>AMD Fan Control</title>
+    <link rel="icon" type="image/svg+xml" href="/assets/icon.svg" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <img src="/assets/icon.svg" width="44" height="44" alt="" />
+        <div><h1>AMD Fan Control</h1><p id="gpu-name">Connessione alla GPU…</p></div>
+        <span class="version">0.1 alpha</span>
+      </header>
+      <p id="error" role="alert" hidden></p>
+      <section class="telemetry" aria-label="Telemetria GPU" aria-live="off">
+        <div><span>Temperatura GPU</span><strong id="edge">— <small>°C</small></strong></div>
+        <div><span>Junction / hotspot</span><strong id="hotspot">— <small>°C</small></strong></div>
+        <div><span>Ventole</span><strong id="rpm">— <small>RPM</small></strong></div>
+        <div><span>Velocità rilevata</span><strong id="percent">— <small>%</small></strong></div>
+      </section>
+      <section class="curve-panel" aria-labelledby="curve-title">
+        <div class="section-head"><h2 id="curve-title">Curva ventole</h2><span id="mode" role="status">Inizializzazione</span></div>
+        <p class="hint">Trascina i cinque punti o modifica i valori. Il driver gestisce la curva anche con la finestra chiusa.</p>
+        <svg id="chart" viewBox="0 0 760 252" role="group" aria-label="Curva: temperatura in gradi Celsius e velocità percentuale"></svg>
+        <div id="points" class="points"></div>
+        <p class="hint">Protezione: almeno 25%, velocità crescente e 100% entro 85 °C. Zero RPM disattivato durante il controllo manuale.</p>
+        <div class="actions">
+          <button id="save" class="secondary" disabled>Salva curva</button>
+          <button id="apply" disabled>Applica curva manuale</button>
+          <button id="automatic" class="secondary" disabled>Automatico / default</button>
+        </div>
+        <p id="feedback" role="status">Attendi la prima lettura termica.</p>
+      </section>
+      <details>
+        <summary>Impostazioni</summary>
+        <div class="settings">
+          <label>GPU<select id="adapter"></select></label>
+          <label>Intervallo letture<select id="polling"><option value="2000">2 secondi</option><option value="2500">2,5 secondi</option><option value="3000">3 secondi</option><option value="5000">5 secondi</option><option value="10000">10 secondi</option></select></label>
+          <label class="check"><input type="checkbox" id="autostart" /> Avvia con Windows</label>
+          <label class="check"><input type="checkbox" id="start-tray" /> Avvia nella tray</label>
+        </div>
+        <p class="hint">In questa alpha l'app parte in monitoraggio: applica la curva esplicitamente. L'isteresi della curva nativa dipende dal driver. Il ritardo software è predisposto per futuri backend PWM.</p>
+      </details>
+      <footer><span>Chiudendo la finestra l'app resta nella tray.</span><span>Esci dal menu tray per ripristinare l'automatico.</span></footer>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

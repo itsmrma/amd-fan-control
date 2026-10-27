@@ -1,0 +1,39 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "AMD Fan Control",
+  "version": "0.1.0-alpha.1",
+  "identifier": "com.itsmrma.amdfancontrol",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [{
+      "label": "main",
+      "title": "AMD Fan Control",
+      "width": 920,
+      "height": 790,
+      "minWidth": 680,
+      "minHeight": 650,
+      "visible": false
+    }],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' asset:; connect-src ipc: http://ipc.localhost; font-src 'self'; object-src 'none'; base-uri 'self'; frame-src 'none'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["msi", "nsis"],
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.ico"],
+    "shortDescription": "Lightweight AMD GPU fan curve control",
+    "category": "Utility",
+    "windows": {
+      "webviewInstallMode": { "type": "downloadBootstrapper", "silent": true },
+      "nsis": { "installMode": "currentUser" },
+      "wix": { "language": "en-US", "version": "0.1.0.1" }
+    }
+  }
+}
+
