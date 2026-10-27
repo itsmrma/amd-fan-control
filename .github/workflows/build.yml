@@ -67,6 +67,13 @@ jobs:
           Copy-Item target/release/bundle/msi/*.msi release/
           Copy-Item target/release/bundle/nsis/*-setup.exe release/
           Copy-Item amd-fan-control-windows-x64-portable.zip release/
+          # GitHub replaces spaces with dots in asset names. Normalize before
+          # hashing so SHA256SUMS refers to the actual downloadable filenames.
+          Get-ChildItem release -File | ForEach-Object {
+            if ($_.Name.Contains(' ')) {
+              Rename-Item -LiteralPath $_.FullName -NewName $_.Name.Replace(' ', '.')
+            }
+          }
           Get-ChildItem release -File | ForEach-Object {
             $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash.ToLowerInvariant()
             "$hash  $($_.Name)" | Add-Content -Path release/SHA256SUMS.txt -Encoding utf8

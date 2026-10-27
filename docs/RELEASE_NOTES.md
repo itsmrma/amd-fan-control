@@ -5,6 +5,7 @@ Changes since alpha 1:
 - **Selectable curve temperature** above the chart: normal GPU temperature (default), junction/hotspot, or the previous driver/firmware mode. The chart and Zero RPM policy follow the saved selection; both temperature safeguards remain active.
 - GPU/hotspot modes update requested speed once per second through verified OD8 speed holds, retaining native emergency escalation. Missing selected sensors and rejected changes trigger recovery. Physical fan response for these new modes still needs hardware validation.
 - Curve fields adapt to panel width, with consistent input sizes and readable labels. Settings move below the curve before either panel gets cramped. Wide windows keep the two panels aligned.
+- SHA-256 entries use the exact published installer filenames, including GitHub's filename normalization.
 - Desktop layout fits the available window height without unnecessary scrolling; small windows retain scrolling to keep controls reachable.
 - **Use custom fan curve** switch: on applies your saved curve; off restores the driver's default fan curve and Zero RPM setting. Your saved curve is kept.
 - Clearer button labels and hover explanations for saving, custom control, and driver-default restoration.
