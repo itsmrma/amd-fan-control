@@ -323,6 +323,9 @@ fn handle(
             // The switch owns this preference; an older frontend draft must
             // not overwrite a more recent explicit on/off choice.
             next.config.custom_control_enabled = s.config.custom_control_enabled;
+            if next.config.custom_control_enabled && next.config.adapter_id.is_none() {
+                next.config.adapter_id = s.config.adapter_id.clone();
+            }
             if let Err(e) = select(backend, &mut next).and_then(|_| {
                 validate_zero_rpm(&next)?;
                 next.config.save(path)
@@ -856,10 +859,12 @@ mod tests {
         restore(&mut gpu, &mut s).unwrap();
         let mut draft = s.config.clone();
         draft.custom_control_enabled = false;
+        draft.adapter_id = None;
         draft.polling_ms = 3000;
         handle(Action::Save(draft), &mut gpu, &path, &mut s).unwrap();
         let loaded = Config::load(&path).unwrap();
         assert!(loaded.custom_control_enabled);
+        assert_eq!(loaded.adapter_id.as_deref(), Some("pci:41:0:0"));
         assert_eq!(loaded.polling_ms, 3000);
     }
 
