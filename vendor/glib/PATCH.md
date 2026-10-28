@@ -1,7 +1,7 @@
 # glib 0.18 security backport
 
 This directory contains the unmodified crates.io `glib` 0.18.5 release except
-for this document and the two-line fix in `src/variant_iter.rs` described below.
+for this document and the changes described below.
 Its original MIT license and copyright notices are preserved.
 
 - Archive: https://static.crates.io/crates/glib/glib-0.18.5.crate
@@ -14,7 +14,14 @@ Its original MIT license and copyright notices are preserved.
 `VariantStrIter::impl_get` now declares its output pointer as `mut` and passes
 `&mut p` to `g_variant_get_child`. Passing `&p` allowed the C function to mutate
 an immutable Rust reference, causing undefined behavior and crashes under
-optimization. No public API, package version or other library code is changed.
+optimization. No public API or package version is changed.
+
+`src/collections/ptr_slice.rs`: `PtrSlice::truncate` now removes elements through
+the existing `pop()` operation, which updates the length and NULL terminator
+before dropping each removed element. This avoids reusing a pointer after
+running the element's destructor, reported by CodeQL as `rust/invalid-pointer-deref`.
+Its documentation now correctly says truncation retains the first elements.
+The regression suite covers truncation, reuse, zero length and no-op cases.
 
 Tauri 2's GTK3 dependencies require glib 0.18; glib 0.20, which contains the
 released fix, is not compatible with that dependency family. The root

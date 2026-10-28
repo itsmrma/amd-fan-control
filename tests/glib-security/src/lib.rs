@@ -44,4 +44,29 @@ mod tests {
         assert_eq!(empty.array_iter_str().unwrap().next_back(), None);
         assert_eq!(empty.array_iter_str().unwrap().last(), None);
     }
+
+    #[test]
+    fn pointer_slice_truncates_and_remains_reusable() {
+        let items = [
+            glib::Error::new(glib::FileError::Failed, "first"),
+            glib::Error::new(glib::FileError::Failed, "middle"),
+            glib::Error::new(glib::FileError::Failed, "last"),
+        ];
+        let mut slice = glib::PtrSlice::from(&items[..]);
+        slice.truncate(5);
+        assert_eq!(slice.len(), 3);
+        slice.truncate(1);
+        assert_eq!(slice.len(), 1);
+        assert_eq!(slice[0].message(), "first");
+        slice.push(items[2].clone());
+        assert_eq!(slice.pop().unwrap().message(), "last");
+        assert_eq!(slice.pop().unwrap().message(), "first");
+        assert!(slice.pop().is_none());
+        slice.truncate(0);
+        slice.push(items[1].clone());
+        slice.truncate(0);
+        assert!(slice.is_empty());
+        slice.push(items[0].clone());
+        assert_eq!(slice[0].message(), "first");
+    }
 }
