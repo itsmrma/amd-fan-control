@@ -2,7 +2,7 @@
 
 ## Preparation and read-only checks
 
-Use Windows 10/11 x64 with the AMD driver installed. Close MSI Afterburner and disable other fan controllers. The app opens in monitoring mode without writing fan settings. Keep Radeon Software available for independent observations with its fan tuning disabled.
+Use Windows 10/11 x64 with the AMD driver installed. Close MSI Afterburner and disable other fan controllers. For read-only checks, turn custom control off before quitting so the next launch remains in monitoring mode; new profiles already default to off. Keep Radeon Software available for independent observations with its fan tuning disabled.
 
 ```powershell
 .\fan-cli.exe list
@@ -39,7 +39,7 @@ Automatic means ADL fan defaults. Failed reset is reported as an error. If the d
 4. Edit numbers after dragging, and use chart arrow keys/Shift. Reject duplicate temperatures, decreasing speeds, invalid values, and a last point below 100% or above 85 °C.
 5. Save with **Save curve & settings**, turn on **Use custom fan curve**, and verify independently. Turn the switch off and check driver defaults, including Zero RPM. The saved custom curve must be kept. **Use driver defaults** must also work as an explicit recovery command.
 6. Apply, close/reopen via tray, and quit. Verify restoration before exit.
-7. Test Windows autostart separately from start in tray. Save the latter with **Save all changes**. Restarting must not silently apply the curve.
+7. Test Windows autostart separately from start in tray. Save the latter with **Save all changes**. Enable the custom curve, quit, then reopen and reboot: after fresh telemetry, the saved curve must resume on the same GPU and the switch must reflect confirmed driver readback. Turn it off, restart again, and verify it stays off. Old profiles without the preference must stay off. Missing GPU/sensors, unsafe temperatures or rejected writes must show an error and prevent repeated automatic activation attempts.
 8. After these checks, evaluate sleep/resume, driver resets, external changes, and forced termination. Record the state left in the driver.
 
 ## Zero RPM below 25%

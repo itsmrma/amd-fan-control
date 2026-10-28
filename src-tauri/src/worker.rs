@@ -260,6 +260,51 @@ fn check_zero_rpm(backend: &mut dyn GpuBackend, s: &mut Snapshot, sample: &Sampl
     }
 }
 
+fn remember_custom_control(path: &std::path::Path, s: &mut Snapshot, enabled: bool) -> Result<()> {
+    let mut config = s.config.clone();
+    config.custom_control_enabled = enabled;
+    if enabled {
+        // Persist the exact selected GPU, including when it was selected implicitly.
+        config.adapter_id = Some(s.selected.as_ref().context("No GPU selected")?.id.clone());
+    }
+    if config.custom_control_enabled != s.config.custom_control_enabled
+        || config.adapter_id != s.config.adapter_id
+    {
+        config.save(path)?;
+        s.config = config;
+    }
+    Ok(())
+}
+
+fn resume_custom_control(
+    backend: &mut dyn GpuBackend,
+    path: &std::path::Path,
+    s: &mut Snapshot,
+    pending: &mut bool,
+) {
+    if !*pending || !s.ready || s.sample.is_none() || s.selected.is_none() {
+        return;
+    }
+    // One attempt per launch, after telemetry arrives. Safety stops and driver
+    // rejections must not cause repeated automatic writes in this session.
+    *pending = false;
+    if !s.config.custom_control_enabled || s.manual {
+        return;
+    }
+    if s.config.adapter_id.as_deref() != s.selected.as_ref().map(|a| a.id.as_str()) {
+        s.error = Some("Could not resume the saved curve: the saved GPU is not selected.".into());
+        return;
+    }
+    match handle(Action::Apply, backend, path, s) {
+        Ok(_) => s.error = None,
+        Err(e) => {
+            s.error = Some(format!(
+                "Could not resume the saved custom fan curve. {e:#}"
+            ))
+        }
+    }
+}
+
 fn handle(
     action: Action,
     backend: &mut dyn GpuBackend,
@@ -275,6 +320,12 @@ fn handle(
             // Select using a temporary snapshot; a failed selection does not replace the saved config.
             let mut next = s.clone();
             next.config = config;
+            // The switch owns this preference; an older frontend draft must
+            // not overwrite a more recent explicit on/off choice.
+            next.config.custom_control_enabled = s.config.custom_control_enabled;
+            if next.config.custom_control_enabled && next.config.adapter_id.is_none() {
+                next.config.adapter_id = s.config.adapter_id.clone();
+            }
             if let Err(e) = select(backend, &mut next).and_then(|_| {
                 validate_zero_rpm(&next)?;
                 next.config.save(path)
@@ -291,7 +342,7 @@ fn handle(
             *s = next;
         }
         Action::Apply => {
-            if !s.ready || s.sample.is_none() {
+            if !s.ready || s.sample.is_none() || s.selected.is_none() {
                 bail!("Wait for a valid temperature reading");
             }
             let points = native_points(&s.config.curve)?;
@@ -336,9 +387,24 @@ fn handle(
                     );
                 }
             }
+            if let Err(e) = remember_custom_control(path, s, true) {
+                bail!(
+                    "{}",
+                    restore_after_failure(
+                        backend,
+                        s,
+                        "The custom-control choice could not be saved.",
+                        Some(&format!("{e:#}")),
+                    )
+                );
+            }
         }
         Action::Automatic => {
+            // Still restore hardware if saving fails. Conversely, persist the
+            // explicit off choice even if the driver refuses restoration.
+            let saved = remember_custom_control(path, s, false);
             restore(backend, s).context("Could not confirm driver default fan settings. Use driver defaults to try again; keep the app open")?;
+            saved.context("Driver defaults restored, but the off choice could not be saved. Custom control may resume on the next launch")?;
         }
         Action::Stop => {
             if s.manual {
@@ -363,6 +429,7 @@ fn run(
         s.error = Some(format!("{e:#}"));
     }
     s.ready = true;
+    let mut resume_pending = s.config.custom_control_enabled;
     let mut last_tick = Instant::now();
     let mut deadline = Instant::now();
     let mut failures = 0;
@@ -372,6 +439,8 @@ fn run(
         publish(app, &s);
         match receiver.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
             Ok(request) => {
+                // An explicit user action takes precedence over startup restoration.
+                resume_pending = false;
                 let result = handle(request.action, backend.as_mut(), path, &mut s);
                 let stop = matches!(result, Ok(true));
                 let reply = result.map(|_| ()).map_err(|e| format!("{e:#}"));
@@ -433,6 +502,7 @@ fn run(
                             .duration_since(UNIX_EPOCH)
                             .ok()
                             .map(|t| t.as_millis() as u64);
+                        resume_custom_control(backend.as_mut(), path, &mut s, &mut resume_pending);
                     }
                     Err(e) => {
                         failures += 1;
@@ -531,13 +601,19 @@ mod tests {
         }
     }
     fn snapshot() -> Snapshot {
+        let adapter = Adapter {
+            index: 0,
+            id: "pci:41:0:0".into(),
+            name: "Test GPU".into(),
+            od_version: 8,
+        };
         Snapshot {
             config: Config {
                 temperature_source: TemperatureSource::Firmware,
                 ..Config::default()
             },
-            adapters: vec![],
-            selected: None,
+            adapters: vec![adapter.clone()],
+            selected: Some(adapter),
             curve_info: None,
             sample: Some(Sample {
                 edge_c: Some(50),
@@ -548,6 +624,10 @@ mod tests {
             error: None,
             ready: true,
         }
+    }
+    fn test_request(action: Action, gpu: &mut dyn GpuBackend, s: &mut Snapshot) -> Result<bool> {
+        let dir = tempfile::tempdir()?;
+        handle(action, gpu, &dir.path().join("config.json"), s)
     }
     struct GateGpu {
         info: CurveInfo,
@@ -635,6 +715,160 @@ mod tests {
         )
     }
     #[test]
+    fn enabling_custom_control_persists_the_choice() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        let (mut gpu, mut s) = gate_setup();
+        handle(Action::Apply, &mut gpu, &path, &mut s).unwrap();
+        assert!(
+            path.exists(),
+            "The custom-control choice must be saved immediately"
+        );
+        let saved = serde_json::to_value(Config::load(&path).unwrap()).unwrap();
+        assert_eq!(saved["custom_control_enabled"], true);
+    }
+
+    #[test]
+    fn restart_resumes_the_saved_curve_after_telemetry_and_exit_preserves_the_choice() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        let (mut gpu, mut s) = gate_setup();
+        s.config.temperature_source = TemperatureSource::Gpu;
+        handle(Action::Apply, &mut gpu, &path, &mut s).unwrap();
+        assert_eq!(s.config.adapter_id.as_deref(), Some("pci:41:0:0"));
+        handle(Action::Stop, &mut gpu, &path, &mut s).unwrap();
+        assert!(!s.manual);
+        assert!(Config::load(&path).unwrap().custom_control_enabled);
+
+        let (mut gpu, mut restarted) = gate_setup();
+        restarted.config = Config::load(&path).unwrap();
+        restarted.ready = false;
+        restarted.sample = None;
+        let mut pending = restarted.config.custom_control_enabled;
+        resume_custom_control(&mut gpu, &path, &mut restarted, &mut pending);
+        assert!(pending);
+        assert!(!restarted.manual);
+        assert!(gpu.speed_writes.is_empty());
+        restarted.ready = true;
+        resume_custom_control(&mut gpu, &path, &mut restarted, &mut pending);
+        assert!(pending);
+        assert!(gpu.speed_writes.is_empty());
+        restarted.sample = Some(gpu.sample.clone());
+        restarted.error = Some("Telemetry unavailable during startup".into());
+        resume_custom_control(&mut gpu, &path, &mut restarted, &mut pending);
+        assert!(!pending);
+        assert!(restarted.manual);
+        assert!(restarted.error.is_none());
+        assert_eq!(gpu.speed_writes, [20]);
+        resume_custom_control(&mut gpu, &path, &mut restarted, &mut pending);
+        assert_eq!(gpu.speed_writes.len(), 1);
+
+        handle(Action::Automatic, &mut gpu, &path, &mut restarted).unwrap();
+        assert!(!restarted.manual);
+        assert!(!Config::load(&path).unwrap().custom_control_enabled);
+        let (mut gpu, mut off) = gate_setup();
+        off.config = Config::load(&path).unwrap();
+        let mut pending = off.config.custom_control_enabled;
+        resume_custom_control(&mut gpu, &path, &mut off, &mut pending);
+        assert!(!off.manual);
+        assert!(gpu.speed_writes.is_empty());
+    }
+
+    #[test]
+    fn startup_rejects_unsafe_readings_and_driver_failures_without_retrying() {
+        for failure in ["hot", "missing", "invalid", "rejected", "wrong_gpu"] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("config.json");
+            let (mut gpu, mut s) = gate_setup();
+            s.config.temperature_source = TemperatureSource::Gpu;
+            s.config.custom_control_enabled = true;
+            s.config.adapter_id = Some("pci:41:0:0".into());
+            s.config.save(&path).unwrap();
+            match failure {
+                "hot" => gpu.sample.edge_c = Some(90),
+                "missing" => gpu.sample.edge_c = None,
+                "invalid" => gpu.sample.edge_c = Some(0),
+                "rejected" => gpu.reject = true,
+                "wrong_gpu" => s.selected.as_mut().unwrap().id = "pci:42:0:0".into(),
+                _ => unreachable!(),
+            }
+            let mut pending = true;
+            resume_custom_control(&mut gpu, &path, &mut s, &mut pending);
+            assert!(!pending, "{failure}");
+            assert!(!s.manual, "{failure}");
+            assert!(s.error.as_ref().unwrap().starts_with("Could not resume"));
+            assert_eq!(gpu.speed_writes.len(), usize::from(failure == "rejected"));
+            gpu.reject = false;
+            gpu.sample.edge_c = Some(38);
+            s.selected.as_mut().unwrap().id = "pci:41:0:0".into();
+            let writes = gpu.speed_writes.len();
+            resume_custom_control(&mut gpu, &path, &mut s, &mut pending);
+            assert!(!s.manual);
+            assert_eq!(gpu.speed_writes.len(), writes);
+        }
+    }
+
+    #[test]
+    fn failed_choice_save_restores_hardware_and_does_not_enable_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let blocked = dir.path().join("config.json");
+        std::fs::create_dir(&blocked).unwrap();
+        let (mut gpu, mut s) = gate_setup();
+        s.config.temperature_source = TemperatureSource::Gpu;
+        let error = handle(Action::Apply, &mut gpu, &blocked, &mut s).unwrap_err();
+        assert!(error.to_string().contains("choice could not be saved"));
+        assert!(!s.manual);
+        assert!(!s.config.custom_control_enabled);
+        assert!(!gpu.info.zero_rpm_enabled);
+    }
+
+    #[test]
+    fn explicit_off_is_saved_even_when_driver_restore_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        let (mut gpu, mut s) = gate_setup();
+        handle(Action::Apply, &mut gpu, &path, &mut s).unwrap();
+        gpu.fail_reset = true;
+        assert!(handle(Action::Automatic, &mut gpu, &path, &mut s).is_err());
+        assert!(s.manual);
+        assert!(!s.config.custom_control_enabled);
+        assert!(!Config::load(&path).unwrap().custom_control_enabled);
+    }
+
+    #[test]
+    fn explicit_off_still_restores_hardware_when_saving_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        let blocked = dir.path().join("blocked.json");
+        std::fs::create_dir(&blocked).unwrap();
+        let (mut gpu, mut s) = gate_setup();
+        handle(Action::Apply, &mut gpu, &path, &mut s).unwrap();
+        let error = handle(Action::Automatic, &mut gpu, &blocked, &mut s).unwrap_err();
+        assert!(error.to_string().contains("off choice could not be saved"));
+        assert!(!s.manual);
+        assert!(!gpu.info.zero_rpm_enabled);
+        assert!(Config::load(&path).unwrap().custom_control_enabled);
+    }
+
+    #[test]
+    fn stale_settings_draft_cannot_overwrite_the_switch_preference() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        let (mut gpu, mut s) = gate_setup();
+        handle(Action::Apply, &mut gpu, &path, &mut s).unwrap();
+        restore(&mut gpu, &mut s).unwrap();
+        let mut draft = s.config.clone();
+        draft.custom_control_enabled = false;
+        draft.adapter_id = None;
+        draft.polling_ms = 3000;
+        handle(Action::Save(draft), &mut gpu, &path, &mut s).unwrap();
+        let loaded = Config::load(&path).unwrap();
+        assert!(loaded.custom_control_enabled);
+        assert_eq!(loaded.adapter_id.as_deref(), Some("pci:41:0:0"));
+        assert_eq!(loaded.polling_ms, 3000);
+    }
+
+    #[test]
     fn sensor_selection_controls_speed_and_unchanged_speed_skips_writes() {
         for (source, expected) in [
             (TemperatureSource::Gpu, 40),
@@ -645,13 +879,7 @@ mod tests {
             s.config.zero_rpm_below_percent = None;
             gpu.sample.edge_c = Some(50);
             gpu.sample.hotspot_c = Some(70);
-            handle(
-                Action::Apply,
-                &mut gpu,
-                std::path::Path::new("unused"),
-                &mut s,
-            )
-            .unwrap();
+            test_request(Action::Apply, &mut gpu, &mut s).unwrap();
             assert!(s.manual);
             assert_eq!(gpu.speed_writes, [expected]);
             assert_eq!(gpu.info.current[0].speed, expected);
@@ -690,13 +918,7 @@ mod tests {
             for missing_sensor in [false, true] {
                 let (mut gpu, mut s) = gate_setup();
                 s.config.temperature_source = TemperatureSource::Gpu;
-                handle(
-                    Action::Apply,
-                    &mut gpu,
-                    std::path::Path::new("unused"),
-                    &mut s,
-                )
-                .unwrap();
+                test_request(Action::Apply, &mut gpu, &mut s).unwrap();
                 gpu.fail_reset = fail_reset;
                 gpu.fail_write = !missing_sensor;
                 let sample = Sample {
@@ -716,13 +938,7 @@ mod tests {
         let (mut gpu, mut s) = gate_setup();
         s.config.temperature_source = TemperatureSource::Gpu;
         gpu.reject = true;
-        assert!(handle(
-            Action::Apply,
-            &mut gpu,
-            std::path::Path::new("unused"),
-            &mut s
-        )
-        .is_err());
+        assert!(test_request(Action::Apply, &mut gpu, &mut s).is_err());
         assert!(!s.manual);
     }
     #[test]
@@ -730,13 +946,7 @@ mod tests {
         let (mut gpu, mut s) = gate_setup();
         s.config.temperature_source = TemperatureSource::Hotspot;
         gpu.sample.hotspot_c = None;
-        let error = handle(
-            Action::Apply,
-            &mut gpu,
-            std::path::Path::new("unused"),
-            &mut s,
-        )
-        .unwrap_err();
+        let error = test_request(Action::Apply, &mut gpu, &mut s).unwrap_err();
         assert!(error
             .to_string()
             .contains("Hotspot temperature sensor unavailable"));
@@ -775,34 +985,16 @@ mod tests {
     fn switching_off_restores_defaults_without_discarding_the_saved_curve() {
         let (mut gpu, mut s) = gate_setup();
         let saved = s.config.curve.clone();
-        handle(
-            Action::Apply,
-            &mut gpu,
-            std::path::Path::new("unused"),
-            &mut s,
-        )
-        .unwrap();
+        test_request(Action::Apply, &mut gpu, &mut s).unwrap();
         assert!(s.manual);
-        handle(
-            Action::Automatic,
-            &mut gpu,
-            std::path::Path::new("unused"),
-            &mut s,
-        )
-        .unwrap();
+        test_request(Action::Automatic, &mut gpu, &mut s).unwrap();
         assert!(!s.manual);
         assert_eq!(s.config.curve, saved);
     }
     #[test]
     fn zero_rpm_transitions_only_when_needed_and_keeps_the_native_curve() {
         let (mut gpu, mut s) = gate_setup();
-        handle(
-            Action::Apply,
-            &mut gpu,
-            std::path::Path::new("unused"),
-            &mut s,
-        )
-        .unwrap();
+        test_request(Action::Apply, &mut gpu, &mut s).unwrap();
         assert!(s.curve_info.as_ref().unwrap().zero_rpm_enabled);
         let warm = Sample {
             edge_c: Some(42),
@@ -833,13 +1025,7 @@ mod tests {
         assert!(update_zero_rpm(&mut gpu, &mut s, &cool).is_err());
         assert!(!s.curve_info.as_ref().unwrap().zero_rpm_enabled);
         s.curve_info.as_mut().unwrap().zero_rpm_supported = false;
-        assert!(handle(
-            Action::Apply,
-            &mut gpu,
-            std::path::Path::new("unused"),
-            &mut s
-        )
-        .is_err());
+        assert!(test_request(Action::Apply, &mut gpu, &mut s).is_err());
         assert!(!s.manual);
     }
     #[test]
@@ -850,14 +1036,9 @@ mod tests {
             resets: 0,
         };
         let mut s = snapshot();
-        let error = handle(
-            Action::Apply,
-            &mut gpu,
-            std::path::Path::new("unused"),
-            &mut s,
-        )
-        .unwrap_err()
-        .to_string();
+        let error = test_request(Action::Apply, &mut gpu, &mut s)
+            .unwrap_err()
+            .to_string();
         assert!(
             error.contains("Driver default fan settings restored"),
             "{error}"
@@ -866,13 +1047,7 @@ mod tests {
         assert_eq!(gpu.resets, 1);
         assert!(!s.manual);
         gpu.fail_reset = true;
-        assert!(handle(
-            Action::Apply,
-            &mut gpu,
-            std::path::Path::new("unused"),
-            &mut s
-        )
-        .is_err());
+        assert!(test_request(Action::Apply, &mut gpu, &mut s).is_err());
         assert!(s.manual); // A failed restore must never be reported as automatic.
     }
     #[test]
@@ -884,22 +1059,10 @@ mod tests {
         };
         let mut s = snapshot();
         s.manual = true;
-        assert!(handle(
-            Action::Stop,
-            &mut gpu,
-            std::path::Path::new("unused"),
-            &mut s
-        )
-        .is_err());
+        assert!(test_request(Action::Stop, &mut gpu, &mut s).is_err());
         assert!(s.manual);
         gpu.fail_reset = false;
-        assert!(handle(
-            Action::Stop,
-            &mut gpu,
-            std::path::Path::new("unused"),
-            &mut s
-        )
-        .unwrap());
+        assert!(test_request(Action::Stop, &mut gpu, &mut s).unwrap());
         assert!(!s.manual);
     }
     #[test]

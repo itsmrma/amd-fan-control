@@ -51,18 +51,20 @@ A named Windows mutex prevents two utility sessions writing the same GPU. It can
 | Event | Behavior |
 | --- | --- |
 | Close window | Hide to tray; worker continues |
-| Switch custom control off / Use driver defaults | Request fan-only driver defaults; retain the saved custom curve |
-| Quit from tray | Restore after custom control; failure blocks ordinary exit |
+| Switch custom control off / Use driver defaults | Persist the off choice and request fan-only driver defaults; retain the saved custom curve |
+| Quit from tray | Restore after custom control; preserve the saved startup choice; failure blocks ordinary exit |
 | Read/write failure | Invalidate telemetry and attempt restoration |
 | Rust unwind | Drop attempts cleanup; no guarantee after abort/access violation |
 | Forced kill/power loss | No cleanup; curve and last Zero RPM flag may remain; gate stops updating |
-| Next launch | Monitoring only; does not assert defaults are already active |
+| Next launch | If explicitly enabled previously, attempt the saved curve once on the exact saved GPU after fresh telemetry; otherwise monitor only |
 
 No independent watchdog exists. Fan-only reset is not a formal guarantee of autonomous BIOS control on every driver. Firmware retains its own stop/restart conditions if the worker terminates.
 
 ## Configuration and frontend
 
-Configuration validates schema, curve invariants, interval, and Zero RPM policy. Same-directory temporary files, `sync_all`, and atomic replacement preserve the previous save on failure. Corrupt JSON is preserved and reported. No persisted manual-control flag exists.
+Configuration validates schema, curve invariants, interval, Zero RPM policy and the GPU ID required for startup restoration. Same-directory temporary files, `sync_all`, and atomic replacement preserve the previous save on failure. Corrupt JSON is preserved and reported. `custom_control_enabled` stores the last explicit switch choice, defaulting to false for old profiles. The runtime `manual` flag remains separate and is true only after a write attempt, retaining its conservative true state if recovery fails.
+
+Enabling custom control saves the choice and exact selected GPU only after driver readback succeeds; a failed save triggers restoration. Explicit off saves the preference and always attempts hardware restoration, including on a save error. Normal quit and safety stops do not erase the startup choice. At startup, telemetry errors defer the attempt; once a reading is available, the ordinary activation checks run again against a fresh sample. Missing selected sensors, excessive temperatures, changed GPU identity or driver rejection leave an error and prevent automatic retries in that session. A user command cancels a pending startup attempt. Settings drafts cannot overwrite the switch preference.
 
 The English frontend uses local fonts, SVG, and system light/dark appearance. Settings remain visible below or beside the curve. Desktop layout sizes the chart within the viewport; narrow/short windows retain scrolling for reachable content. ResizeObserver keeps chart coordinates and hit areas in CSS pixels. Dragging captures the pointer on the stable SVG root, preserves grab offset, and suppresses text selection. Keyboard and numeric editing are alternatives. Draft changes are locked during custom control.
 

@@ -56,11 +56,13 @@ Download from [Releases](https://github.com/itsmrma/amd-fan-control/releases). I
 
 Closing the window keeps the app in the tray. **Quit** from the tray menu attempts restoration before exiting; if it fails, the app stays open and shows the error.
 
-The app starts in monitoring mode with custom control off and never silently reapplies a curve. It does not reset existing GPU settings at startup. Configuration lives at `%APPDATA%\amd-fan-control\config.json`. Windows autostart takes effect immediately; other settings require **Save all changes**, which saves the whole draft including the curve.
+The custom-control switch is remembered immediately. If it was on, the app attempts to resume your saved curve on the same GPU after fresh telemetry is available, including when Windows autostart launches the app. The switch shows on only after the driver confirms the settings. Turning it off or using **Use driver defaults** cancels startup restoration. **Quit** restores driver defaults for the current session while keeping your choice for the next launch. New and older profiles without a saved choice start with custom control off.
+
+Configuration lives at `%APPDATA%\amd-fan-control\config.json`. Windows autostart takes effect immediately; other settings require **Save all changes**, which saves the whole draft including the curve. Missing GPU/sensors, unsafe temperatures or driver rejection block startup restoration and show an error; the app does not repeatedly retry a rejected curve.
 
 ### Curve temperature
 
-**GPU temperature** uses the normal edge reading; **Junction / hotspot** uses that sensor explicitly. Profiles without a selection now default to GPU temperature; startup still leaves custom control off. A missing selected sensor blocks activation or stops active control with a restoration attempt. There is no silent substitution.
+**GPU temperature** uses the normal edge reading; **Junction / hotspot** uses that sensor explicitly. Profiles without a selection default to GPU temperature. A missing selected sensor blocks activation, including startup restoration, or stops active control with a restoration attempt. There is no silent substitution.
 
 These two modes interpolate the saved curve once per second, updating OD8 only when requested speed or Zero RPM changes. The native curve holds that speed across the normal firmware temperature range, retaining a final ramp to 100% at the driver's maximum curve temperature (capped at 100 °C). Firmware can raise speed in that final ramp. This avoids assuming which internal sensor the driver uses. Edge ≥90 °C and hotspot ≥105 °C safeguards remain active for either selection. New sensor-based writes and physical fan response require separate hardware validation.
 

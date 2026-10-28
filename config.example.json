@@ -11,5 +11,6 @@
   "polling_ms": 2500,
   "temperature_source": "gpu",
   "start_in_tray": false,
+  "custom_control_enabled": false,
   "zero_rpm_below_percent": null
 }
