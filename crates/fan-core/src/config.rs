@@ -39,6 +39,8 @@ pub struct Config {
     pub polling_ms: u64,
     pub temperature_source: TemperatureSource,
     pub start_in_tray: bool,
+    /// Last explicit custom-control choice; runtime activation is verified separately.
+    pub custom_control_enabled: bool,
     /// Missing in older profiles: preserve their previous fan behavior.
     pub zero_rpm_below_percent: Option<i32>,
 }
@@ -54,6 +56,7 @@ impl Default for Config {
             polling_ms: 2500,
             temperature_source: TemperatureSource::Gpu,
             start_in_tray: false,
+            custom_control_enabled: false,
             zero_rpm_below_percent: None,
         }
     }
@@ -66,6 +69,9 @@ impl Config {
         }
         if !(1000..=10000).contains(&self.polling_ms) {
             bail!("Refresh interval must be 1000–10000 ms");
+        }
+        if self.custom_control_enabled && self.adapter_id.as_ref().is_none_or(|id| id.is_empty()) {
+            bail!("Resuming custom control requires a saved GPU ID");
         }
         curve::native_points(&self.curve)?;
         self.zero_rpm_stop_temperature()?;
@@ -228,6 +234,28 @@ mod tests {
         assert_eq!(loaded.zero_rpm_below_percent, Some(25));
         assert_eq!(loaded.zero_rpm_stop_temperature().unwrap(), Some(42));
     }
+    #[test]
+    fn custom_control_defaults_off_and_requires_a_specific_gpu_when_enabled() {
+        let mut json = serde_json::to_value(Config::default()).unwrap();
+        json.as_object_mut()
+            .unwrap()
+            .remove("custom_control_enabled");
+        let mut config: Config = serde_json::from_value(json).unwrap();
+        assert!(!config.custom_control_enabled);
+        config.custom_control_enabled = true;
+        assert!(config.validate().is_err());
+        config.adapter_id = Some("pci:41:0:0".into());
+        config.validate().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        config.save(&path).unwrap();
+        let loaded = Config::load(&path).unwrap();
+        assert!(loaded.custom_control_enabled);
+        assert_eq!(loaded.adapter_id.as_deref(), Some("pci:41:0:0"));
+        config.adapter_id = Some(String::new());
+        assert!(config.validate().is_err());
+    }
+
     #[test]
     fn config_roundtrip_replace_and_corruption() {
         let dir = tempfile::tempdir().unwrap();

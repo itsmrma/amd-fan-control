@@ -17,7 +17,7 @@ test.beforeEach(async ({ page }) => {
       config: {
         schema_version: 1, adapter_id: adapter.id,
         curve: [[40, 20], [50, 40], [65, 60], [75, 80], [85, 100]].map(([temperature, speed]) => ({ temperature, speed })),
-        polling_ms: 2500, start_in_tray: false, zero_rpm_below_percent: 25,
+        polling_ms: 2500, start_in_tray: false, custom_control_enabled: false, zero_rpm_below_percent: 25,
       },
       adapters: [adapter], selected: adapter,
       curve_info: {
@@ -28,6 +28,12 @@ test.beforeEach(async ({ page }) => {
       sample: { edge_c: 38, hotspot_c: 40, rpm: 900, speed_percent: 25 },
       sampled_at_ms: Date.now(), manual: false, error: null, ready: true,
     };
+    const saved = localStorage.getItem('test-config');
+    if (saved) {
+      window.gpu.config = JSON.parse(saved);
+      // Model the confirmed worker snapshot after startup restoration.
+      window.gpu.manual = window.gpu.config.custom_control_enabled;
+    }
     window.mockInvoke = async (name, args) => {
       window.calls.push(name);
       const s = window.gpu;
@@ -35,16 +41,20 @@ test.beforeEach(async ({ page }) => {
       if (name === 'get_status') return structuredClone(s);
       if (name === 'autostart_enabled') return false;
       if (window.commandDelay) await new Promise(resolve => setTimeout(resolve, window.commandDelay));
-      if (name === 'save_config') s.config = structuredClone(args.config);
+      if (name === 'save_config') s.config = { ...structuredClone(args.config), custom_control_enabled: s.config.custom_control_enabled };
       if (name === 'apply_curve') {
         if (window.failApply) { s.manual = false; throw window.failApply; }
         s.manual = true;
+        s.config.custom_control_enabled = true;
       }
       if (name === 'restore_automatic') {
+        s.config.custom_control_enabled = false;
+        localStorage.setItem('test-config', JSON.stringify(s.config));
         if (window.failRestore) throw 'Could not restore driver defaults. Keep the app open.';
         s.manual = false;
         s.error = null;
       }
+      localStorage.setItem('test-config', JSON.stringify(s.config));
     };
     setInterval(() => { window.gpu.sampled_at_ms = Date.now(); window.emitStatus?.(); }, 1000);
   });
@@ -157,6 +167,21 @@ test('save, switch on, switch off and retain the saved curve', async ({ page }) 
   await expect(page.getByRole('spinbutton', { name: 'Point 2, fan speed in percent', exact: true })).toHaveValue('45');
   expect(await page.evaluate(() => window.calls.filter(c => c !== 'get_status' && c !== 'autostart_enabled')))
     .toEqual(['save_config', 'apply_curve', 'restore_automatic']);
+});
+
+test('restart displays the confirmed saved custom-control choice', async ({ page }) => {
+  const control = page.getByRole('switch');
+  await control.check();
+  await expect(control).toBeChecked();
+  await expect(page.locator('#control-help')).toContainText('will resume when the app starts');
+  await page.reload();
+  await expect(control).toBeChecked();
+  await expect(page.locator('#mode')).toHaveText('Custom curve active');
+  expect(await page.evaluate(() => window.calls.includes('apply_curve'))).toBe(false);
+  await control.uncheck();
+  await page.reload();
+  await expect(control).not.toBeChecked();
+  await expect(page.locator('#mode')).toHaveText('Custom control off');
 });
 
 test('failed restore keeps custom control on and recovery remains available without telemetry', async ({ page }) => {

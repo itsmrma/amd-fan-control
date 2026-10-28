@@ -13,7 +13,8 @@ Tauri, Rust crates and frontend dependencies retain their respective licenses;
 resolved versions are recorded in Cargo.lock and package-lock.json.
 
 `vendor/glib` contains the gtk-rs Project Developers' MIT-licensed glib 0.18.5
-with the upstream fix for RUSTSEC-2024-0429 backported. Its license and copyright
+with the upstream fix for RUSTSEC-2024-0429 backported and pointer-slice truncation
+changed to clear slots before dropping removed elements. Its license and copyright
 notices are included in that directory. See `vendor/glib/PATCH.md` for provenance
 and the exact changes. This dependency is used by the Linux GTK3 stack only.
 

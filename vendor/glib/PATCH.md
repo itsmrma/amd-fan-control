@@ -19,7 +19,7 @@ optimization. No public API or package version is changed.
 `src/collections/ptr_slice.rs`: `PtrSlice::truncate` now removes elements through
 the existing `pop()` operation, which updates the length and NULL terminator
 before dropping each removed element. This avoids reusing a pointer after
-running the element's destructor, reported by CodeQL as `rust/invalid-pointer-deref`.
+running the element's destructor, reported by CodeQL as "Access of invalid pointer".
 Its documentation now correctly says truncation retains the first elements.
 The regression suite covers truncation, reuse, zero length and no-op cases.
 

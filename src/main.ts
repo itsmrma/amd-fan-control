@@ -3,7 +3,7 @@ import { listen } from '@tauri-apps/api/event';
 import './style.css';
 
 type Point = { temperature: number; speed: number };
-type Config = { schema_version: number; adapter_id: string | null; curve: Point[]; polling_ms: number; temperature_source: 'gpu' | 'hotspot' | 'firmware'; start_in_tray: boolean; zero_rpm_below_percent: number | null };
+type Config = { schema_version: number; adapter_id: string | null; curve: Point[]; polling_ms: number; temperature_source: 'gpu' | 'hotspot' | 'firmware'; start_in_tray: boolean; custom_control_enabled: boolean; zero_rpm_below_percent: number | null };
 type CurveInfo = { supported: boolean; zero_rpm_supported: boolean; zero_rpm_enabled: boolean; minimum: Point[]; maximum: Point[] };
 type Adapter = { id: string; name: string; od_version: number };
 type Sample = { edge_c: number | null; hotspot_c: number | null; rpm: number | null; speed_percent: number | null };
@@ -184,10 +184,12 @@ function controls() {
   for (const hit of chart.querySelectorAll('.hit')) hit.setAttribute('aria-disabled', String(locked));
   el('mode').textContent = state?.manual ? 'Custom curve active' : state?.ready ? 'Custom control off' : 'Connecting';
   el('control-help').textContent = pending ? 'Updating fan control…' : state?.manual
-    ? 'Your saved curve controls the fans. Turn off to restore driver defaults.'
+    ? state.config.custom_control_enabled
+      ? 'Your saved curve controls the fans and will resume when the app starts. Turn off to restore driver defaults.'
+      : 'Custom control may still be active. Use driver defaults to retry restoration.'
     : state?.sample && !sensorAvailable ? 'Selected temperature sensor unavailable. Choose another curve temperature.'
     : dirty ? 'Save your changes before turning on. Turn off restores driver defaults.'
-    : 'On: saved curve · Off: driver defaults.';
+    : 'On: saved curve · Off: driver defaults. Your choice is remembered after restart.';
   const error = localError ?? state?.error ?? (state?.sampled_at_ms && stale() ? 'GPU readings are out of date. Use driver defaults, then restart the app.' : null);
   const [message, details] = (error ?? '').split('\n\nTechnical details: ');
   el('error').hidden = !error; el('error-message').textContent = message;
