@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "AMD Fan Control",
-  "version": "0.1.0-alpha.2",
+  "version": "0.1.0-alpha.3",
   "identifier": "com.itsmrma.amdfancontrol",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -32,7 +32,7 @@
     "windows": {
       "webviewInstallMode": { "type": "downloadBootstrapper", "silent": true },
       "nsis": { "installMode": "currentUser" },
-      "wix": { "language": "en-US", "version": "0.1.0.2" }
+      "wix": { "language": "en-US", "version": "0.1.0.3" }
     }
   }
 }

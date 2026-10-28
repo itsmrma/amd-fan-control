@@ -34,7 +34,7 @@ dependencies = [
 
 [[package]]
 name = "amd-adl"
-version = "0.1.0-alpha.2"
+version = "0.1.0-alpha.3"
 dependencies = [
  "anyhow",
  "cc",
@@ -43,7 +43,7 @@ dependencies = [
 
 [[package]]
 name = "amd-fan-control"
-version = "0.1.0-alpha.2"
+version = "0.1.0-alpha.3"
 dependencies = [
  "amd-adl",
  "anyhow",
@@ -992,7 +992,7 @@ dependencies = [
 
 [[package]]
 name = "fan-cli"
-version = "0.1.0-alpha.2"
+version = "0.1.0-alpha.3"
 dependencies = [
  "amd-adl",
  "anyhow",
@@ -1002,7 +1002,7 @@ dependencies = [
 
 [[package]]
 name = "fan-core"
-version = "0.1.0-alpha.2"
+version = "0.1.0-alpha.3"
 dependencies = [
  "anyhow",
  "serde",
