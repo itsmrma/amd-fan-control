@@ -1,6 +1,7 @@
 [workspace]
 members = ["crates/fan-core", "crates/amd-adl", "crates/fan-cli", "src-tauri", "tests/glib-security"]
 default-members = ["crates/fan-core", "crates/amd-adl", "crates/fan-cli"]
+exclude = ["vendor/glib"]
 resolver = "2"
 
 [workspace.package]

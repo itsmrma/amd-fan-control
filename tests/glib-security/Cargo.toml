@@ -6,4 +6,4 @@ license.workspace = true
 publish = false
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
-glib = "0.18.5"
+glib = { path = "../../vendor/glib" }
