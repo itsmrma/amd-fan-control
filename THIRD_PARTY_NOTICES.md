@@ -12,6 +12,11 @@ and is covered by the project MIT license.
 Tauri, Rust crates and frontend dependencies retain their respective licenses;
 resolved versions are recorded in Cargo.lock and package-lock.json.
 
+`vendor/glib` contains the gtk-rs Project Developers' MIT-licensed glib 0.18.5
+with the upstream fix for RUSTSEC-2024-0429 backported. Its license and copyright
+notices are included in that directory. See `vendor/glib/PATCH.md` for provenance
+and the exact changes. This dependency is used by the Linux GTK3 stack only.
+
 ## AMD ADL header license
 
 Copyright (c) 2016–2022 Advanced Micro Devices, Inc. All rights reserved.

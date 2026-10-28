@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/fan-core", "crates/amd-adl", "crates/fan-cli", "src-tauri"]
+members = ["crates/fan-core", "crates/amd-adl", "crates/fan-cli", "src-tauri", "tests/glib-security"]
 default-members = ["crates/fan-core", "crates/amd-adl", "crates/fan-cli"]
 resolver = "2"
 
@@ -13,6 +13,11 @@ rust-version = "1.90"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"
+
+# Tauri's GTK3 backend requires glib 0.18. Keep the upstream security fix
+# until Tauri supports a compatible patched release. See vendor/glib/PATCH.md.
+[patch.crates-io]
+glib = { path = "vendor/glib" }
 
 [profile.release]
 lto = "thin"
