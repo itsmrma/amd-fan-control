@@ -64,13 +64,15 @@ No independent watchdog exists. Fan-only reset is not a formal guarantee of auto
 
 Configuration validates schema, curve invariants, interval, Zero RPM policy and the GPU ID required for startup restoration. Same-directory temporary files, `sync_all`, and atomic replacement preserve the previous save on failure. Corrupt JSON is preserved and reported. `custom_control_enabled` stores the last explicit switch choice, defaulting to false for old profiles. The runtime `manual` flag remains separate and is true only after a write attempt, retaining its conservative true state if recovery fails.
 
+JSON backup uses the same schema and validation. Export opens a native save dialog from Rust, neutralizes the machine-specific switch choice, and writes atomically. Import reads at most 1 MB, validates the document, and returns it to the frontend as an unsaved draft; it never changes fan control or the saved profile until the user saves.
+
 Enabling custom control saves the choice and exact selected GPU only after driver readback succeeds; a failed save triggers restoration. Explicit off saves the preference and always attempts hardware restoration, including on a save error. Normal quit and safety stops do not erase the startup choice. At startup, telemetry errors defer the attempt; once a reading is available, the ordinary activation checks run again against a fresh sample. Missing selected sensors, excessive temperatures, changed GPU identity or driver rejection leave an error and prevent automatic retries in that session. A user command cancels a pending startup attempt. Settings drafts cannot overwrite the switch preference.
 
 The English frontend uses local fonts, SVG, and system light/dark appearance. Settings remain visible below or beside the curve. Desktop layout sizes the chart within the viewport; narrow/short windows retain scrolling for reachable content. ResizeObserver keeps chart coordinates and hit areas in CSS pixels. Dragging captures the pointer on the stable SVG root, preserves grab offset, and suppresses text selection. Keyboard and numeric editing are alternatives. Draft changes are locked during custom control.
 
 The custom-control switch follows the worker's confirmed manual state; command failures refresh the snapshot before unlocking controls. Switching off remains available without telemetry or curve capability. Recovery errors describe the operation, the confirmed restoration outcome, and the next action. Driver diagnostics appear under a separate **Technical details** disclosure. ADL -8 on a Zero RPM transition is explained as an unsupported operation; fan-stop write support is not inferred from readable capabilities.
 
-The frontend has no filesystem/shell access or remote dependencies. SVGs are emitted as local files (`assetsInlineLimit: 0`) because the desktop CSP disallows data URLs. Autostart reads OS state through dedicated commands.
+The frontend has no general filesystem/shell access or remote dependencies. JSON backup uses dedicated Rust commands and native dialogs; the webview only receives the selected configuration or the final path. SVGs are emitted as local files (`assetsInlineLimit: 0`) because the desktop CSP disallows data URLs. Autostart reads OS state through dedicated commands.
 
 ## Future backends
 

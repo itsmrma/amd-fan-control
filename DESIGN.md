@@ -195,7 +195,7 @@ Readings use large tabular values with muted units and labels. Unavailable or st
 
 ### Fields and settings
 
-Fields use inherited typography, theme panel backgrounds, single-pixel borders, and 44px minimum height. Checkboxes are 18px with the accent color. Settings include Zero RPM permission and its percentage threshold (initially 25%), GPU selection, refresh interval, Windows autostart, and start in tray. Unsupported Zero RPM remains unavailable, but an already enabled draft can always be switched off for recovery.
+Fields use inherited typography, theme panel backgrounds, single-pixel borders, and 44px minimum height. Checkboxes are 18px with the accent color. Settings include Zero RPM permission and its percentage threshold (initially 25%), GPU selection, refresh interval, Windows autostart, and start in tray. **Export settings** and **Import settings** sit with the curve actions and share the secondary-button style; import loads an unsaved draft for review instead of applying hardware changes. Unsupported Zero RPM remains unavailable, but an already enabled draft can always be switched off for recovery.
 
 **Save all changes** and **Save curve & settings** save the whole draft, with unsaved/saving/saved/error feedback. Autostart is an immediate OS command with pending state and rollback on failure; the other settings require saving. Existing profiles without a Zero RPM value preserve disabled behavior.
 

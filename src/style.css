@@ -96,6 +96,8 @@ select { width: 100%; min-width: 0; text-overflow: ellipsis; }
 .threshold-field input { width: 88px; font-variant-numeric: tabular-nums; }
 .threshold-field span { color: var(--muted); font-size: 13px; }
 .fan-stop p + p { margin-top: 8px; }
+#backup-feedback { font-size: 13px; color: var(--muted); margin-top: 12px; overflow-wrap: anywhere; }
+#backup-feedback:empty { display: none; }
 footer { display: flex; justify-content: space-between; gap: 16px; margin-top: 24px; font-size: 12px; }
 ::selection { background: var(--accent); color: #fff; }
 @media (prefers-color-scheme: dark) {
