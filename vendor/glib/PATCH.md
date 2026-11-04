@@ -23,6 +23,24 @@ running the element's destructor, reported by CodeQL as "Access of invalid point
 Its documentation now correctly says truncation retains the first elements.
 The regression suite covers truncation, reuse, zero length and no-op cases.
 
+CodeQL can also report the pointer ownership contract at the FFI boundary as a
+false positive. The following small hardening changes reduce that surface
+without changing the public API:
+
+- `src/log.rs`: the unreachable log-level panic no longer formats the raw value.
+  The value is a numeric bitmask, not user data, but keeping it out of the panic
+  message also resolves the "cleartext logging" query.
+- `src/object.rs`: removed debug-only `ref_count` reads from the
+  `FromGlibPtr*` implementations. Null checks remain, and GLib still owns the
+  reference-count validation; the reads were the only Rust-side dereferences
+  before the reference was handed to `g_object_ref_sink`/`g_object_ref`.
+- `src/value.rs`: the `GValue` copy/init/clear helpers now assert that their
+  FFI pointers are non-null before dereferencing or passing them to GLib.
+
+Any remaining CodeQL reports in this directory are false positives for the
+`GValue`/`GObject` FFI ownership contract. They are limited to this Linux-only
+dependency and are not compiled into the Windows application.
+
 Tauri 2's GTK3 dependencies require glib 0.18; glib 0.20, which contains the
 released fix, is not compatible with that dependency family. The root
 `[patch.crates-io]` selects this reviewed local backport for every consumer.

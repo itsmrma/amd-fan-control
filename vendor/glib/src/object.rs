@@ -467,7 +467,6 @@ impl FromGlibPtrNone<*mut gobject_ffi::GObject> for ObjectRef {
     #[inline]
     unsafe fn from_glib_none(ptr: *mut gobject_ffi::GObject) -> Self {
         debug_assert!(!ptr.is_null());
-        debug_assert_ne!((*ptr).ref_count, 0);
 
         // Attention: This takes ownership of floating references!
         Self {
@@ -490,7 +489,6 @@ impl FromGlibPtrFull<*mut gobject_ffi::GObject> for ObjectRef {
     #[inline]
     unsafe fn from_glib_full(ptr: *mut gobject_ffi::GObject) -> Self {
         debug_assert!(!ptr.is_null());
-        debug_assert_ne!((*ptr).ref_count, 0);
 
         Self {
             inner: ptr::NonNull::new_unchecked(ptr),
@@ -503,7 +501,6 @@ impl FromGlibPtrBorrow<*mut gobject_ffi::GObject> for ObjectRef {
     #[inline]
     unsafe fn from_glib_borrow(ptr: *mut gobject_ffi::GObject) -> Borrowed<Self> {
         debug_assert!(!ptr.is_null());
-        debug_assert_ne!((*ptr).ref_count, 0);
 
         Borrowed::new(Self {
             inner: ptr::NonNull::new_unchecked(ptr),
@@ -1050,7 +1047,6 @@ macro_rules! glib_object_wrapper {
             unsafe fn from_value(value: &'a $crate::Value) -> Self {
                 let ptr = $crate::gobject_ffi::g_value_dup_object($crate::translate::ToGlibPtr::to_glib_none(value).0);
                 debug_assert!(!ptr.is_null());
-                debug_assert_ne!((*ptr).ref_count, 0);
                 <Self as $crate::translate::FromGlibPtrFull<*mut $ffi_name>>::from_glib_full(ptr as *mut $ffi_name)
             }
         }
