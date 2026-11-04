@@ -82,7 +82,10 @@ impl FromGlib<u32> for LogLevel {
         } else if value & ffi::G_LOG_LEVEL_DEBUG != 0 {
             Self::Debug
         } else {
-            panic!("Unknown log level: {value}")
+            // Do not include the raw value in the panic message. CodeQL treats
+            // this path as logging data received from C and the numeric level
+            // is not useful enough to risk leaking it.
+            panic!("Unknown GLib log level")
         }
     }
 }

@@ -17,6 +17,10 @@ let draft: Config | null = null;
 let dirty = false;
 let pending = false;
 let localError: string | null = null;
+type AvailableUpdate = NonNullable<Awaited<ReturnType<typeof import('@tauri-apps/plugin-updater').check>>>;
+let availableUpdate: AvailableUpdate | null = null;
+let checkingUpdate = false;
+el('app-version').textContent = `v${__APP_VERSION__}`;
 let dragging: { index: number; pointerId: number; dx: number; dy: number } | null = null;
 let chartWidth = 760;
 let chartHeight = 300;
@@ -307,6 +311,93 @@ async function importSettings() {
   finally { pending = false; controls(); }
 }
 
+function showUpdateStatus(message: string, progress?: { value: number; max: number }) {
+  el<HTMLDivElement>('update-status').hidden = false;
+  el('update-feedback').textContent = message;
+  const bar = el<HTMLProgressElement>('update-progress');
+  if (progress) {
+    bar.max = progress.max;
+    bar.value = progress.value;
+    bar.hidden = false;
+  } else {
+    bar.hidden = true;
+    bar.value = 0;
+    bar.max = 100;
+  }
+}
+
+function setUpdateButton(label: string, disabled = false) {
+  const button = el<HTMLButtonElement>('update-button');
+  button.textContent = label;
+  button.disabled = disabled;
+}
+
+async function checkForUpdates() {
+  if (checkingUpdate) return;
+  if (!isTauri()) {
+    showUpdateStatus('Update checks run in the desktop app.');
+    return;
+  }
+  checkingUpdate = true;
+  availableUpdate = null;
+  setUpdateButton('Checking…', true);
+  showUpdateStatus('Checking GitHub for a signed update…');
+  try {
+    const { check } = await import('@tauri-apps/plugin-updater');
+    const update = await check();
+    if (!update) {
+      setUpdateButton('Check for updates');
+      showUpdateStatus(`You are running the latest version (v${__APP_VERSION__}).`);
+      return;
+    }
+    availableUpdate = update;
+    const notes = update.body?.trim();
+    setUpdateButton(`Install v${update.version}`);
+    showUpdateStatus(`Version ${update.version} is available.${notes ? ` ${notes}` : ''} It is signed by the GitHub release build.`);
+  } catch (error) {
+    setUpdateButton('Check for updates');
+    showUpdateStatus(`Could not check for updates: ${error}`);
+  } finally {
+    checkingUpdate = false;
+  }
+}
+
+async function installUpdate() {
+  if (checkingUpdate || !availableUpdate) return;
+  const update = availableUpdate;
+  checkingUpdate = true;
+  setUpdateButton('Installing…', true);
+  let total = 0;
+  let downloaded = 0;
+  try {
+    await update.downloadAndInstall(event => {
+      if (event.event === 'Started') {
+        total = event.data.contentLength ?? 0;
+        showUpdateStatus('Downloading the signed update…', total ? { value: 0, max: total } : undefined);
+      } else if (event.event === 'Progress') {
+        downloaded += event.data.chunkLength;
+        const percent = total ? Math.min(100, Math.round(downloaded / total * 100)) : null;
+        showUpdateStatus(
+          percent === null ? 'Downloading the signed update…' : `Downloading the signed update… ${percent}%`,
+          total ? { value: downloaded, max: total } : undefined,
+        );
+      } else {
+        showUpdateStatus('Update downloaded. Restarting to finish…', { value: 100, max: 100 });
+      }
+    });
+    showUpdateStatus('Update installed. Restarting…', { value: 100, max: 100 });
+    const { relaunch } = await import('@tauri-apps/plugin-process');
+    await relaunch();
+  } catch (error) {
+    checkingUpdate = false;
+    setUpdateButton(`Install v${update.version}`);
+    showUpdateStatus(`Could not install the update: ${error}`);
+  }
+}
+
+el('update-button').addEventListener('click', () => {
+  void (availableUpdate ? installUpdate() : checkForUpdates());
+});
 el('save').addEventListener('click', saveDraft);
 el('save-settings').addEventListener('click', saveDraft);
 el('export-settings').addEventListener('click', exportSettings);

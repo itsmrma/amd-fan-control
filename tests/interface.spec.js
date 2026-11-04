@@ -274,6 +274,23 @@ test('failed apply refreshes the confirmed mode and separates technical details'
   await expect(page.locator('#error-detail-text')).toHaveText('Zero RPM write (ADL -8)');
 });
 
+test('checks for a signed update and installs it from the header', async ({ page }) => {
+  await page.route('**/node_modules/.vite/deps/@tauri-apps_plugin-updater.js*', route => route.fulfill({
+    contentType: 'text/javascript',
+    body: 'export const check=async()=>({version:"0.1.0-alpha.5",body:"Signed test release.",downloadAndInstall:async(cb)=>{cb({event:"Started",data:{contentLength:10}});cb({event:"Progress",data:{chunkLength:10}});cb({event:"Finished"});window.updateInstalled=true;}});',
+  }));
+  await page.route('**/node_modules/.vite/deps/@tauri-apps_plugin-process.js*', route => route.fulfill({
+    contentType: 'text/javascript',
+    body: 'export const relaunch=async()=>{window.relaunched=true;};',
+  }));
+  await page.getByRole('button', { name: 'Check for updates' }).click();
+  await expect(page.getByRole('button', { name: 'Install v0.1.0-alpha.5' })).toBeEnabled();
+  await expect(page.locator('#update-status')).toContainText('Version 0.1.0-alpha.5 is available');
+  await page.getByRole('button', { name: 'Install v0.1.0-alpha.5' }).click();
+  await expect.poll(() => page.evaluate(() => window.relaunched)).toBe(true);
+  expect(await page.evaluate(() => window.updateInstalled)).toBe(true);
+});
+
 test('the legend explains the cutoff and buttons expose hover help', async ({ page }) => {
   await expect(page.locator('#zero-legend')).toContainText('fans may stop below 42 °C');
   await expect(page.locator('#zero-legend')).toContainText('Firmware decides');

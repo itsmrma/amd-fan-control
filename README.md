@@ -39,6 +39,7 @@ Older GCN cards (Polaris/Vega), integrated graphics, laptop-controlled fans, and
 - Optional **Zero RPM below a configurable curve-speed threshold**, initially **25%**.
 - Persistent Settings panel, beside the curve in wide windows and below it in smaller windows.
 - Export and import the curve and settings as a JSON file for backups or a new Windows installation.
+- **Check for updates** in the header, with one-click install of a newer release after its GitHub signature is verified.
 - Automatic fan-default restoration, tray, optional Windows autostart, and start in tray.
 - System light/dark appearance, local JSON, and a small vanilla TypeScript frontend.
 - MSI, NSIS installer, and portable ZIP builds through GitHub Actions.
@@ -47,7 +48,9 @@ Only fan-related settings are written. Clocks, voltages, and power limits are un
 
 ## Getting started
 
-Download from [Releases](https://github.com/itsmrma/amd-fan-control/releases). Installers handle WebView2; portable builds require it already installed. Alpha binaries are unsigned. ADL is loaded from the AMD driver's `atiadlxx.dll` in System32; no separate DLL download is needed.
+Download from [Releases](https://github.com/itsmrma/amd-fan-control/releases). Installers handle WebView2; portable builds require it already installed. ADL is loaded from the AMD driver's `atiadlxx.dll` in System32; no separate DLL download is needed.
+
+Use **Check for updates** in the header to ask GitHub for a newer release. If one exists, the button becomes **Install**; the app downloads the NSIS package, verifies its Tauri minisign signature, runs the installer, and restarts. Update checks are manual only. The updater accepts only packages produced and signed by the project's GitHub Actions release workflow; local builds cannot replace a release. Windows Authenticode signing still requires a separately purchased certificate, so alpha installers remain unsigned by Windows itself.
 
 1. Close MSI Afterburner and disable other fan controllers, including Radeon Software fan tuning.
 2. Open the app and check temperatures and RPM. Select your GPU in **Settings** if necessary.
@@ -136,7 +139,9 @@ See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for ownership and recovery details.
 
 ## Builds and releases
 
-[CI](.github/workflows/build.yml) runs core tests on Linux, Windows tests/lint, and MSI/NSIS/ZIP packaging. Normal builds produce Actions artifacts; a `v*` tag publishes a prerelease after checks pass, with SHA-256 checksums. Release publishing uses `GITHUB_TOKEN`, with `contents: write` scoped to the release job.
+[CI](.github/workflows/build.yml) runs core tests on Linux, Windows tests/lint, and MSI/NSIS/ZIP packaging. Normal builds produce Actions artifacts; a `v*` tag publishes a prerelease after checks pass, with SHA-256 checksums. Release publishing uses `GITHUB_TOKEN`, with `contents: write` scoped to the release job. Windows artifacts carry GitHub build-provenance attestations.
+
+`bundle.createUpdaterArtifacts` makes Tauri sign each installer with the update key. The release job copies the `.sig` files, writes `latest.json` for `windows-x86_64`, and refreshes the rolling `updater` release. The app checks `https://github.com/itsmrma/amd-fan-control/releases/download/updater/latest.json`, so prerelease tags can be discovered. The matching private key exists only in the `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` Actions secrets. To rotate the key, generate a new pair with `npm run tauri signer generate`, replace the public key in `src-tauri/tauri.conf.json`, and update both secrets in the same release. Users on a build signed with the previous key must install that release manually.
 
 Keep `Cargo.toml`, `package.json`, lockfiles, and `src-tauri/tauri.conf.json` versions aligned before tagging. MSI uses a separate numeric version.
 

@@ -26,6 +26,10 @@ p { margin: 0; }
 .app-header p, .hint, footer { color: var(--muted); font-size: 13px; line-height: 1.55; }
 .app-header p { overflow-wrap: anywhere; }
 .version { margin-left: auto; flex-shrink: 0; color: var(--muted); font-size: 13px; }
+.update-button { flex: 0 0 auto; min-height: 36px; padding: 8px 12px; white-space: nowrap; }
+.update-status { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 14px; margin: -12px 0 18px; padding: 10px 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--muted); font-size: 13px; line-height: 1.45; }
+#update-feedback { overflow-wrap: anywhere; }
+#update-progress { width: 160px; max-width: 100%; accent-color: var(--accent); }
 .telemetry { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); padding-bottom: 24px; gap: 20px; }
 .telemetry span { font-size: 13px; color: var(--muted); }
 strong { display: block; font-size: clamp(28px, 2.5vw, 38px); font-weight: 600; font-variant-numeric: tabular-nums; margin-top: 5px; }
@@ -151,6 +155,10 @@ footer { display: flex; justify-content: space-between; gap: 16px; margin-top: 2
   footer { flex-direction: column; gap: 4px; }
   .section-head { align-items: flex-start; }
   #mode { max-width: 180px; }
+}
+@media (max-width: 700px) {
+  .app-header { flex-wrap: wrap; }
+  .update-button { margin-left: auto; }
 }
 @media (max-width: 420px) {
   .version { display: none; }
