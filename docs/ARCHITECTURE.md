@@ -74,6 +74,8 @@ The custom-control switch follows the worker's confirmed manual state; command f
 
 The frontend has no general filesystem/shell access or remote dependencies. JSON backup uses dedicated Rust commands and native dialogs; the webview only receives the selected configuration or the final path. SVGs are emitted as local files (`assetsInlineLimit: 0`) because the desktop CSP disallows data URLs. Autostart reads OS state through dedicated commands.
 
+Update checks are user-initiated. The webview dynamically imports the Tauri updater and process plugins, so the normal startup path does not contact GitHub. Rust downloads the NSIS package and verifies its minisign signature against the public key in `src-tauri/tauri.conf.json` before starting the installer; `relaunch()` runs only after a successful install. The manifest lives on the rolling `updater` GitHub release, which keeps a stable URL independent of prerelease tags. Builds are produced only by the release workflow, and the private signing key is available only through Actions secrets.
+
 ## Future backends
 
 The hardware trait is independent of Tauri/Windows. Linux sysfs/hwmon is not implemented. `StepDown` remains available for future smoothing or a separate host-PWM backend. Current sensor control uses OD8 speed holds rather than direct PWM.
@@ -82,4 +84,4 @@ The hardware trait is independent of Tauri/Windows. Linux sysfs/hwmon is not imp
 
 - [Pinned AMD SDK](https://github.com/GPUOpen-LibrariesAndSDKs/display-library/tree/84c881cb2136f04287eb3af12de00a9e2867aa9e)
 - [Overdrive8 example](https://gpuopen-librariesandsdks.github.io/adl/Overdrive8-example.html)
-- [Tauri configuration](https://v2.tauri.app/reference/config/), [tray](https://v2.tauri.app/learn/system-tray/), [autostart](https://v2.tauri.app/plugin/autostart/)
+- [Tauri configuration](https://v2.tauri.app/reference/config/), [tray](https://v2.tauri.app/learn/system-tray/), [autostart](https://v2.tauri.app/plugin/autostart/), [updater](https://v2.tauri.app/plugin/updater/), [process](https://v2.tauri.app/plugin/process/)

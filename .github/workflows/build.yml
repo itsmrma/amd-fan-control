@@ -35,6 +35,10 @@ jobs:
   windows:
     name: Windows x64
     runs-on: windows-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
@@ -57,11 +61,28 @@ jobs:
       - name: Rust lint
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - name: Build MSI and NSIS installer
-        run: npm run tauri build -- --bundles msi,nsis
+        shell: pwsh
+        env:
+          RELEASE_BUILD: ${{ startsWith(github.ref, 'refs/tags/') }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if ($env:RELEASE_BUILD -eq 'true') {
+            npm run tauri build -- --bundles msi,nsis
+          } else {
+            # Pull requests never receive the release signing key. Build the
+            # same installers without updater artifacts so fork/Dependabot PRs
+            # stay testable; tagged releases always sign.
+            $config = Join-Path $env:RUNNER_TEMP 'tauri-pr.json'
+            Set-Content -Path $config -Value '{"bundle":{"createUpdaterArtifacts":false}}' -Encoding ascii
+            npm run tauri build -- --bundles msi,nsis --config $config
+          }
       - name: Build diagnostic CLI
         run: cargo build --locked --release -p fan-cli
       - name: Assemble portable package
         shell: pwsh
+        env:
+          RELEASE_BUILD: ${{ startsWith(github.ref, 'refs/tags/') }}
         run: |
           New-Item -ItemType Directory -Path portable | Out-Null
           Copy-Item target/release/amd-fan-control.exe,target/release/fan-cli.exe portable/
@@ -72,6 +93,10 @@ jobs:
           New-Item -ItemType Directory -Path release | Out-Null
           Copy-Item target/release/bundle/msi/*.msi release/
           Copy-Item target/release/bundle/nsis/*-setup.exe release/
+          if ($env:RELEASE_BUILD -eq 'true') {
+            Copy-Item target/release/bundle/msi/*.sig release/
+            Copy-Item target/release/bundle/nsis/*.sig release/
+          }
           Copy-Item amd-fan-control-windows-x64-portable.zip release/
           # GitHub replaces spaces with dots in asset names. Normalize before
           # hashing so SHA256SUMS refers to the actual downloadable filenames.
@@ -84,6 +109,11 @@ jobs:
             $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash.ToLowerInvariant()
             "$hash  $($_.Name)" | Add-Content -Path release/SHA256SUMS.txt -Encoding utf8
           }
+      - name: Attest build provenance
+        if: github.event_name != 'pull_request'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: release/*
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: windows-x64
@@ -104,6 +134,24 @@ jobs:
         with:
           name: windows-x64
           path: release
+      - name: Create updater manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          setup="$(find release -maxdepth 1 -type f -name '*-setup.exe' -printf '%f\n' | head -n 1)"
+          test -n "$setup"
+          test -f "release/${setup}.sig"
+          jq -n \
+            --arg version "$version" \
+            --arg notes "$(cat docs/RELEASE_NOTES.md)" \
+            --arg pub_date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg signature "$(cat "release/${setup}.sig")" \
+            --arg url "https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/${setup}" \
+            '{version:$version,notes:$notes,pub_date:$pub_date,platforms:{"windows-x86_64":{signature:$signature,url:$url}}}' \
+            > release/latest.json
+          hash="$(sha256sum release/latest.json | awk '{print $1}')"
+          printf '%s  latest.json\n' "$hash" >> release/SHA256SUMS.txt
       - name: Publish alpha assets
         env:
           GH_TOKEN: ${{ github.token }}
@@ -113,4 +161,18 @@ jobs:
             gh release edit "$GITHUB_REF_NAME" --prerelease --title "AMD Fan Control $GITHUB_REF_NAME" --notes-file docs/RELEASE_NOTES.md
           else
             gh release create "$GITHUB_REF_NAME" release/* --verify-tag --prerelease --title "AMD Fan Control $GITHUB_REF_NAME" --notes-file docs/RELEASE_NOTES.md
+          fi
+      - name: Publish updater manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view updater >/dev/null 2>&1; then
+            gh release upload updater release/latest.json --clobber
+          else
+            gh release create updater release/latest.json \
+              --target "$GITHUB_SHA" \
+              --prerelease \
+              --title "AMD Fan Control update manifest" \
+              --notes "Stable URL for the desktop updater. Download the versioned release instead of installing this one."
           fi

@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "AMD Fan Control",
-  "version": "0.1.0-alpha.3",
+  "version": "0.1.0-alpha.4",
   "identifier": "com.itsmrma.amdfancontrol",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -23,8 +23,15 @@
       "csp": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' asset:; connect-src ipc: http://ipc.localhost; font-src 'self'; object-src 'none'; base-uri 'self'; frame-src 'none'"
     }
   },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEZGRkI0NTA4NzhCNDhEMUMKUldRY2piUjRDRVg3Lzhra3JTemFJWWlXZmwxVGtoOW1ydTNSOFdLNmxBQ05FVHliVERvbkhpeWcK",
+      "endpoints": ["https://github.com/itsmrma/amd-fan-control/releases/download/updater/latest.json"]
+    }
+  },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": ["msi", "nsis"],
     "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.ico"],
     "shortDescription": "Lightweight AMD GPU fan curve control",
@@ -32,7 +39,7 @@
     "windows": {
       "webviewInstallMode": { "type": "downloadBootstrapper", "silent": true },
       "nsis": { "installMode": "currentUser" },
-      "wix": { "language": "en-US", "version": "0.1.0.3" }
+      "wix": { "language": "en-US", "version": "0.1.0.4" }
     }
   }
 }
