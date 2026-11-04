@@ -38,6 +38,7 @@ Older GCN cards (Polaris/Vega), integrated graphics, laptop-controlled fans, and
 - Descriptive button labels and hover help, plus a labeled Zero RPM cutoff on the chart.
 - Optional **Zero RPM below a configurable curve-speed threshold**, initially **25%**.
 - Persistent Settings panel, beside the curve in wide windows and below it in smaller windows.
+- Export and import the curve and settings as a JSON file for backups or a new Windows installation.
 - Automatic fan-default restoration, tray, optional Windows autostart, and start in tray.
 - System light/dark appearance, local JSON, and a small vanilla TypeScript frontend.
 - MSI, NSIS installer, and portable ZIP builds through GitHub Actions.
@@ -59,6 +60,8 @@ Closing the window keeps the app in the tray. **Quit** from the tray menu attemp
 The custom-control switch is remembered immediately. If it was on, the app attempts to resume your saved curve on the same GPU after fresh telemetry is available, including when Windows autostart launches the app. The switch shows on only after the driver confirms the settings. Turning it off or using **Use driver defaults** cancels startup restoration. **Quit** restores driver defaults for the current session while keeping your choice for the next launch. New and older profiles without a saved choice start with custom control off.
 
 Configuration lives at `%APPDATA%\amd-fan-control\config.json`. Windows autostart takes effect immediately; other settings require **Save all changes**, which saves the whole draft including the curve. Missing GPU/sensors, unsafe temperatures or driver rejection block startup restoration and show an error; the app does not repeatedly retry a rejected curve.
+
+Use **Export settings** to save the current curve and settings as JSON, and **Import settings** to load a previous backup into the editor. Imported values are not applied automatically: review them, save, then turn on **Use custom fan curve**. The exported file leaves out the current on/off switch choice, so restoring a backup never starts fan control by itself. The same JSON format works for `config.example.json` and a copied `config.json`.
 
 ### Curve temperature
 

@@ -45,7 +45,10 @@
           <div class="actions">
             <button id="save" disabled title="Save the curve and all settings to this computer. Saving does not change fan control; turn on Use custom fan curve to apply it.">Save curve &amp; settings</button>
             <button id="automatic" class="secondary" disabled title="Restore the graphics driver's default fan curve and Zero RPM setting now. Your saved custom curve is kept for later use.">Use driver defaults</button>
+            <button id="export-settings" class="secondary" type="button" disabled title="Save the curve and settings in this draft to a JSON file you can keep or move to another PC.">Export settings…</button>
+            <button id="import-settings" class="secondary" type="button" disabled title="Load a JSON settings file into this draft. Review the values before saving them.">Import settings…</button>
           </div>
+          <p id="backup-feedback" role="status"></p>
           <p id="feedback" role="status">Waiting for the first temperature reading.</p>
         </section>
         <aside class="settings-panel panel" aria-labelledby="settings-title">

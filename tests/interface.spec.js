@@ -41,6 +41,15 @@ test.beforeEach(async ({ page }) => {
       if (name === 'get_status') return structuredClone(s);
       if (name === 'autostart_enabled') return false;
       if (window.commandDelay) await new Promise(resolve => setTimeout(resolve, window.commandDelay));
+      if (name === 'export_config') {
+        if (window.exportError) throw window.exportError;
+        window.exportedConfig = structuredClone(args.config);
+        return 'C:\\Users\\Test\\amd-fan-control-settings.json';
+      }
+      if (name === 'import_config') {
+        if (window.importError) throw window.importError;
+        return structuredClone(window.importedConfig ?? null);
+      }
       if (name === 'save_config') s.config = { ...structuredClone(args.config), custom_control_enabled: s.config.custom_control_enabled };
       if (name === 'apply_curve') {
         if (window.failApply) { s.manual = false; throw window.failApply; }
@@ -167,6 +176,52 @@ test('save, switch on, switch off and retain the saved curve', async ({ page }) 
   await expect(page.getByRole('spinbutton', { name: 'Point 2, fan speed in percent', exact: true })).toHaveValue('45');
   expect(await page.evaluate(() => window.calls.filter(c => c !== 'get_status' && c !== 'autostart_enabled')))
     .toEqual(['save_config', 'apply_curve', 'restore_automatic']);
+});
+
+test('exports the current draft as portable JSON settings', async ({ page }) => {
+  await page.getByRole('spinbutton', { name: 'Point 2, fan speed in percent', exact: true }).fill('45');
+  await page.getByRole('button', { name: 'Export settings…' }).click();
+  await expect(page.locator('#backup-feedback')).toContainText('Settings exported to');
+  const exported = await page.evaluate(() => window.exportedConfig);
+  expect(exported.curve[1].speed).toBe(45);
+  expect(exported.custom_control_enabled).toBe(false);
+  expect(exported.zero_rpm_below_percent).toBe(25);
+});
+
+test('imports JSON settings into the draft without applying them', async ({ page }) => {
+  await page.evaluate(() => {
+    window.importedConfig = {
+      schema_version: 1, adapter_id: 'pci:99:0:0',
+      curve: [[35, 20], [45, 35], [60, 55], [72, 78], [84, 100]].map(([temperature, speed]) => ({ temperature, speed })),
+      polling_ms: 3000, temperature_source: 'hotspot', start_in_tray: true,
+      custom_control_enabled: true, zero_rpm_below_percent: null,
+    };
+  });
+  await page.getByRole('spinbutton', { name: 'Point 2, fan speed in percent', exact: true }).fill('45');
+  page.once('dialog', dialog => dialog.accept());
+  await page.getByRole('button', { name: 'Import settings…' }).click();
+  await expect(page.locator('#backup-feedback')).toContainText('Imported settings');
+  await expect(page.getByRole('spinbutton', { name: 'Point 1, temperature in degrees Celsius', exact: true })).toHaveValue('35');
+  await expect(page.getByRole('combobox', { name: 'Curve temperature' })).toHaveValue('hotspot');
+  await expect(page.getByRole('checkbox', { name: 'Start in system tray' })).toBeChecked();
+  await expect(page.getByRole('button', { name: 'Save all changes' })).toBeEnabled();
+  expect(await page.evaluate(() => window.calls.includes('apply_curve'))).toBe(false);
+  await page.getByRole('button', { name: 'Save all changes' }).click();
+  const saved = await page.evaluate(() => window.gpu.config);
+  expect(saved.curve[0].temperature).toBe(35);
+  expect(saved.polling_ms).toBe(3000);
+  expect(saved.temperature_source).toBe('hotspot');
+  expect(saved.start_in_tray).toBe(true);
+  expect(saved.custom_control_enabled).toBe(false);
+  expect(saved.adapter_id).toBe('pci:41:0:0');
+});
+
+test('invalid import reports an error without replacing the draft', async ({ page }) => {
+  await page.evaluate(() => { window.importError = 'Unsupported configuration version'; });
+  await page.getByRole('button', { name: 'Import settings…' }).click();
+  await expect(page.getByRole('alert')).toContainText('Unsupported configuration version');
+  await expect(page.locator('#backup-feedback')).toContainText('Could not import settings');
+  await expect(page.getByRole('spinbutton', { name: 'Point 1, temperature in degrees Celsius', exact: true })).toHaveValue('40');
 });
 
 test('restart displays the confirmed saved custom-control choice', async ({ page }) => {

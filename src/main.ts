@@ -170,6 +170,8 @@ function controls() {
   const sensorAvailable = source === 'firmware' || (source === 'gpu' ? state?.sample?.edge_c : state?.sample?.hotspot_c) != null;
   el<HTMLButtonElement>('save').disabled = locked || !draft || !dirty;
   el<HTMLButtonElement>('save-settings').disabled = locked || !draft || !dirty;
+  el<HTMLButtonElement>('export-settings').disabled = pending || !draft;
+  el<HTMLButtonElement>('import-settings').disabled = locked || !draft;
   input('custom-control').checked = !!state?.manual;
   // Turning off remains available even with missing telemetry or changed capabilities.
   input('custom-control').disabled = pending || (state?.manual ? !state.ready || !state.selected : !writable || dirty || !state?.sample || stale() || !sensorAvailable);
@@ -198,26 +200,33 @@ function controls() {
   sensorFeedback();
 }
 
+function syncDraftControls() {
+  if (!draft) return;
+  el<HTMLSelectElement>('temperature-source').value = draft.temperature_source;
+  el<HTMLSelectElement>('polling').value = String(draft.polling_ms);
+  input('start-tray').checked = draft.start_in_tray;
+  input('zero-rpm').checked = draft.zero_rpm_below_percent !== null;
+  input('zero-threshold').value = String(draft.zero_rpm_below_percent ?? 25);
+  fields(); draw();
+}
+
+function loadDraft(config: Config) {
+  draft = structuredClone(config);
+  draft.zero_rpm_below_percent ??= null;
+  draft.temperature_source ??= 'gpu';
+  syncDraftControls();
+}
+
 function update(s: Status) {
   state = s;
-  if (!draft) {
-    draft = structuredClone(s.config);
-    draft.zero_rpm_below_percent ??= null;
-    draft.temperature_source ??= 'gpu';
-    el<HTMLSelectElement>('temperature-source').value = draft.temperature_source;
-    el<HTMLSelectElement>('polling').value = String(draft.polling_ms);
-    input('start-tray').checked = draft.start_in_tray;
-    input('zero-rpm').checked = draft.zero_rpm_below_percent !== null;
-    input('zero-threshold').value = String(draft.zero_rpm_below_percent ?? 25);
-    fields(); draw();
-  }
+  if (!draft) loadDraft(s.config);
   const select = el<HTMLSelectElement>('adapter');
   const ids = s.adapters.map(a => a.id);
   if (select.options.length !== ids.length + 1 || ids.some((id, index) => select.options[index + 1]?.value !== id)) {
     select.replaceChildren(new Option('Select GPU', ''));
     for (const adapter of s.adapters) select.append(new Option(`${adapter.name} · ${adapter.id}`, adapter.id));
   }
-  select.value = draft.adapter_id ?? s.selected?.id ?? '';
+  select.value = draft?.adapter_id ?? s.selected?.id ?? '';
   el('gpu-name').textContent = s.selected ? `${s.selected.name} · Overdrive ${s.selected.od_version}` : s.ready ? 'No GPU selected' : 'Connecting to GPU…';
   const sample = stale() ? null : s.sample;
   for (const [id, value, unit] of [['edge', sample?.edge_c, '°C'], ['hotspot', sample?.hotspot_c, '°C'], ['rpm', sample?.rpm, 'RPM'], ['percent', sample?.speed_percent, '%']] as const) {
@@ -253,8 +262,55 @@ async function saveDraft() {
   } catch (e) { localError = String(e); el('settings-feedback').textContent = `Could not save: ${e}`; }
   finally { pending = false; controls(); }
 }
+async function exportSettings() {
+  if (!draft) return;
+  pending = true; localError = null; controls();
+  el('backup-feedback').textContent = 'Choosing where to save…';
+  try {
+    const config = structuredClone(draft);
+    config.custom_control_enabled = state?.config.custom_control_enabled ?? false;
+    const path = await invoke<string | null>('export_config', { config });
+    el('backup-feedback').textContent = path ? `Settings exported to ${path}.` : 'Export cancelled.';
+  } catch (e) {
+    localError = String(e);
+    el('backup-feedback').textContent = `Could not export settings: ${e}`;
+  }
+  finally { pending = false; controls(); }
+}
+
+async function importSettings() {
+  if (!draft || pending || state?.manual) return;
+  if (dirty && !window.confirm('Replace unsaved changes with the imported settings?')) return;
+  pending = true; localError = null; controls();
+  el('backup-feedback').textContent = 'Choosing a settings file…';
+  try {
+    const imported = await invoke<Config | null>('import_config');
+    if (!imported) {
+      el('backup-feedback').textContent = 'Import cancelled.';
+      return;
+    }
+    imported.custom_control_enabled = state?.config.custom_control_enabled ?? false;
+    const adapterId = imported.adapter_id;
+    if (adapterId && !state?.adapters.some(adapter => adapter.id === adapterId)) {
+      imported.adapter_id = state?.selected?.id ?? null;
+    }
+    loadDraft(imported);
+    dirty = true;
+    if (state) update(state); else controls();
+    el('settings-feedback').textContent = 'Imported settings are not saved yet.';
+    el('feedback').textContent = 'Imported settings are not saved yet. Review the curve, then save.';
+    el('backup-feedback').textContent = 'Imported settings. Review the curve, then save.';
+  } catch (e) {
+    localError = String(e);
+    el('backup-feedback').textContent = `Could not import settings: ${e}`;
+  }
+  finally { pending = false; controls(); }
+}
+
 el('save').addEventListener('click', saveDraft);
 el('save-settings').addEventListener('click', saveDraft);
+el('export-settings').addEventListener('click', exportSettings);
+el('import-settings').addEventListener('click', importSettings);
 input('custom-control').addEventListener('change', () => {
   const enabled = input('custom-control').checked;
   void command(enabled ? 'apply_curve' : 'restore_automatic');
