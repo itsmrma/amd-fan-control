@@ -168,11 +168,30 @@ jobs:
         run: |
           set -euo pipefail
           if gh release view updater >/dev/null 2>&1; then
+            # Rolling release already exists: refresh the manifest and re-point
+            # it at this release commit so the stable URL always tracks HEAD.
             gh release upload updater release/latest.json --clobber
+            gh release edit updater --target "$GITHUB_SHA" --prerelease \
+              --title "AMD Fan Control update manifest" \
+              --notes "Stable URL for the desktop updater. Download the versioned release instead of installing this one."
           else
+            # No release yet. A previous run may have left an orphan `updater`
+            # tag (tag created, release creation failed or the release was
+            # later deleted) pointing at a different commit. `gh release
+            # create` with `--target` errors on a tag that already exists at
+            # another SHA, so drop the stale tag first to make this step
+            # self-healing.
+            if git rev-parse -q --verify "refs/tags/updater" >/dev/null 2>&1; then
+              git tag -d updater >/dev/null
+              gh api -X DELETE "repos/${GITHUB_REPOSITORY}/git/refs/tags/updater"
+            fi
             gh release create updater release/latest.json \
               --target "$GITHUB_SHA" \
               --prerelease \
               --title "AMD Fan Control update manifest" \
               --notes "Stable URL for the desktop updater. Download the versioned release instead of installing this one."
           fi
+          # Verify the stable endpoint is live before declaring success, so a
+          # broken rolling release fails the build instead of shipping a
+          # 404 to every installed client.
+          gh release view updater --json tagName,assets --jq '.tagName as $t | .assets[] | select(.name=="latest.json") | "latest.json on \($t)"'
