@@ -7,12 +7,15 @@ pub struct Adapter {
     pub index: i32,
     pub id: String,
     pub name: String,
-    pub od_version: i32,
+    pub od_version: Option<i32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CurveInfo {
     pub supported: bool,
+    pub native_curve_supported: bool,
+    pub host_pwm_supported: bool,
+    pub writable: bool,
     pub zero_rpm_supported: bool,
     pub zero_rpm_enabled: bool,
     pub current: [Point; 5],
@@ -76,8 +79,8 @@ pub trait GpuBackend {
 /// its normal range. Put a final 1 °C ramp to 100% at the driver's upper limit
 /// (at most 100 °C), so a retained command still has native thermal escalation.
 pub fn speed_hold_points(info: &CurveInfo, percent: i32) -> Result<[Point; 5]> {
-    if !info.supported || !(20..=100).contains(&percent) {
-        bail!("Sensor-based fan control requires a supported curve and 20–100% speed");
+    if !info.supported || !info.native_curve_supported || !(20..=100).contains(&percent) {
+        bail!("Sensor-based fan control requires a supported native curve and 20–100% speed");
     }
     let mut points = [Point::default(); 5];
     let mut ceiling = info.maximum[4].temperature.min(100);
@@ -105,6 +108,9 @@ mod tests {
     fn held_speed_is_sensor_independent_with_a_native_emergency_ramp() {
         let mut info = CurveInfo {
             supported: true,
+            native_curve_supported: true,
+            host_pwm_supported: true,
+            writable: true,
             zero_rpm_supported: true,
             zero_rpm_enabled: false,
             current: [Point::default(); 5],
@@ -147,5 +153,35 @@ mod tests {
         assert!(speed_hold_points(&info, 101).is_err());
         info.supported = false;
         assert!(speed_hold_points(&info, 100).is_err());
+    }
+
+    #[test]
+    fn capabilities_distinguish_native_curve_host_pwm_and_optional_od_version() {
+        let host_pwm_only = CurveInfo {
+            supported: true,
+            native_curve_supported: false,
+            host_pwm_supported: true,
+            writable: false,
+            zero_rpm_supported: false,
+            zero_rpm_enabled: false,
+            current: [Point::default(); 5],
+            minimum: [Point {
+                temperature: 20,
+                speed: 20,
+            }; 5],
+            maximum: [Point {
+                temperature: 100,
+                speed: 100,
+            }; 5],
+        };
+        assert!(speed_hold_points(&host_pwm_only, 50).is_err());
+        let adapter = Adapter {
+            index: 0,
+            id: "pci:03:00.0".into(),
+            name: "AMD Radeon RX 7800 XT".into(),
+            od_version: None,
+        };
+        let json = serde_json::to_value(&adapter).unwrap();
+        assert!(json["od_version"].is_null());
     }
 }

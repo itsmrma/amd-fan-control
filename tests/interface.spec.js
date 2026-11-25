@@ -40,6 +40,7 @@ test.beforeEach(async ({ page }) => {
       s.sampled_at_ms = Date.now();
       if (name === 'get_status') return structuredClone(s);
       if (name === 'autostart_enabled') return false;
+      if (name === 'bundle_type') return window.bundleType ?? null;
       if (window.commandDelay) await new Promise(resolve => setTimeout(resolve, window.commandDelay));
       if (name === 'export_config') {
         if (window.exportError) throw window.exportError;
@@ -344,3 +345,110 @@ test('the legend explains the cutoff and buttons expose hover help', async ({ pa
   await page.getByRole('checkbox', { name: 'Allow fans to stop' }).uncheck();
   await expect(page.locator('#zero-legend')).toBeHidden();
 });
+
+test('uses OS-neutral login copy and omits Overdrive when inapplicable', async ({ page }) => {
+  await expect(page.getByRole('checkbox', { name: 'Launch at login' })).toBeVisible();
+  await expect(page.locator('body')).not.toContainText('Launch with Windows');
+  await page.evaluate(() => {
+    window.gpu.selected = { id: 'pci:03:00.0', name: 'AMD Radeon RX 7800 XT', od_version: null };
+    window.gpu.adapters = [window.gpu.selected];
+    window.emitStatus();
+  });
+  await expect(page.locator('#gpu-name')).toHaveText('AMD Radeon RX 7800 XT');
+  await expect(page.locator('#gpu-name')).not.toContainText('Overdrive');
+});
+
+test('host-PWM-only backend disables Driver / firmware sensor with explanatory help', async ({ page }) => {
+  await page.evaluate(() => {
+    window.gpu.curve_info = {
+      ...window.gpu.curve_info,
+      supported: true,
+      native_curve_supported: false,
+      host_pwm_supported: true,
+      writable: true,
+    };
+    window.emitStatus();
+  });
+  const firmwareOption = page.locator('#temperature-source option[value="firmware"]');
+  await expect(firmwareOption).toBeDisabled();
+  await expect(page.locator('#sensor-help')).toContainText('unavailable');
+  await expect(page.getByRole('switch')).toBeEnabled();
+});
+
+test('read-only permission state blocks control writes while keeping telemetry and backup export usable', async ({ page }) => {
+  await page.evaluate(() => {
+    window.gpu.curve_info = {
+      ...window.gpu.curve_info,
+      supported: true,
+      native_curve_supported: false,
+      host_pwm_supported: true,
+      writable: false,
+    };
+    window.emitStatus();
+  });
+  await expect(page.locator('#mode')).toHaveText('Read-only');
+  await expect(page.getByRole('switch')).toBeDisabled();
+  await expect(page.locator('#control-help')).toContainText('read-only');
+  await expect(page.locator('#control-help')).toContainText('udev');
+  await expect(page.locator('#feedback')).toContainText('udev');
+  await expect(page.locator('#edge')).toContainText('38');
+  await expect(page.getByRole('button', { name: 'Export settings…' })).toBeEnabled();
+});
+
+test('Zero RPM rejection keeps Allow fans to stop removable and hides raw details', async ({ page }) => {
+  const control = page.getByRole('switch');
+  const zeroRpm = page.getByRole('checkbox', { name: 'Allow fans to stop' });
+  await expect(zeroRpm).toBeChecked();
+
+  await page.evaluate(() => {
+    window.failApply = 'The GPU driver rejected Zero RPM fan stop. Turn off ‘Allow fans to stop’, save, then try your custom curve again. Driver default fan settings restored.\n\nTechnical details: This GPU/driver does not support Zero RPM (pwm1_min > 0)';
+    window.gpu.curve_info.zero_rpm_supported = false;
+    window.emitStatus();
+  });
+
+  await control.click();
+  await expect(control).not.toBeChecked();
+  await expect(page.locator('#error-message')).toContainText('Allow fans to stop');
+  await expect(page.locator('#error-message')).not.toContainText('pwm1_min');
+  await page.getByText('Technical details', { exact: true }).click();
+  await expect(page.locator('#error-detail-text')).toContainText('pwm1_min > 0');
+
+  // Allow fans to stop stays removable even though zero_rpm_supported is false.
+  await expect(zeroRpm).toBeEnabled();
+  await zeroRpm.uncheck();
+  await page.getByRole('button', { name: 'Save all changes' }).click();
+  await page.evaluate(() => { window.failApply = null; });
+  await expect(control).toBeEnabled();
+  await control.click();
+  await expect(control).toBeChecked();
+});
+
+test('permission-denied error shows actionable udev guidance and tucks OS error under Technical details', async ({ page }) => {
+  const control = page.getByRole('switch');
+  await page.evaluate(() => {
+    window.failApply = 'Missing hardware permissions to write hwmon PWM fan controls. Live monitoring continues in read-only mode; install the 60-amd-fan-control.rules udev rule for hwmon PWM access and reload udev rules. Driver default fan settings restored.\n\nTechnical details: Writing manual mode to /sys/class/drm/card0/device/hwmon/hwmon0/pwm1_enable: Permission denied (os error 13)';
+  });
+  await control.click();
+  await expect(control).not.toBeChecked();
+  await expect(page.locator('#error-message')).toContainText('read-only');
+  await expect(page.locator('#error-message')).toContainText('udev');
+  await expect(page.locator('#error-message')).not.toContainText('os error 13');
+  await page.getByText('Technical details', { exact: true }).click();
+  await expect(page.locator('#error-detail-text')).toContainText('Permission denied (os error 13)');
+});
+
+for (const pkg of ['deb', 'rpm']) {
+  test(`package-managed Linux install (.${pkg}) shows release package guidance instead of running in-place updater`, async ({ page }) => {
+    await page.route('**/node_modules/.vite/deps/@tauri-apps_plugin-updater.js*', route => route.fulfill({
+      contentType: 'text/javascript',
+      body: 'export const check=async()=>{throw new Error("internal updater should not be called");};',
+    }));
+    await page.evaluate(bundleType => { window.bundleType = bundleType; }, pkg);
+    await page.getByRole('button', { name: 'Check for updates' }).click();
+    await expect(page.locator('#update-status')).toBeVisible();
+    await expect(page.locator('#update-status')).toContainText(`.${pkg}`);
+    await expect(page.locator('#update-status')).toContainText('release package');
+    await expect(page.locator('#update-status')).not.toContainText('Could not check for updates');
+    await expect(page.getByRole('button', { name: 'Check for updates' })).toBeEnabled();
+  });
+}

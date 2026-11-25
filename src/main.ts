@@ -4,8 +4,17 @@ import './style.css';
 
 type Point = { temperature: number; speed: number };
 type Config = { schema_version: number; adapter_id: string | null; curve: Point[]; polling_ms: number; temperature_source: 'gpu' | 'hotspot' | 'firmware'; start_in_tray: boolean; custom_control_enabled: boolean; zero_rpm_below_percent: number | null };
-type CurveInfo = { supported: boolean; zero_rpm_supported: boolean; zero_rpm_enabled: boolean; minimum: Point[]; maximum: Point[] };
-type Adapter = { id: string; name: string; od_version: number };
+type CurveInfo = {
+  supported: boolean;
+  native_curve_supported?: boolean;
+  host_pwm_supported?: boolean;
+  writable?: boolean;
+  zero_rpm_supported: boolean;
+  zero_rpm_enabled: boolean;
+  minimum: Point[];
+  maximum: Point[];
+};
+type Adapter = { id: string; name: string; od_version: number | null };
 type Sample = { edge_c: number | null; hotspot_c: number | null; rpm: number | null; speed_percent: number | null };
 type Status = { config: Config; adapters: Adapter[]; selected: Adapter | null; curve_info: CurveInfo | null; sample: Sample | null; sampled_at_ms: number | null; manual: boolean; error: string | null; ready: boolean };
 const el = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -144,18 +153,34 @@ function zeroFeedback() {
   const active = !!state?.curve_info?.zero_rpm_enabled;
   const stop = zeroStop();
   el('zero-feedback').textContent = !state?.ready ? 'Waiting for GPU capabilities.'
-    : !available ? 'Native Zero RPM is unavailable with this GPU/driver.'
+    : !available ? 'Zero RPM is unavailable with this GPU/driver.'
     : draft?.zero_rpm_below_percent == null ? 'Disabled for custom control.'
     : stop === null ? 'Set a curve point below the threshold. The cutoff must be at or below 60 °C.'
     : `Fans may stop below ${stop} °C; re-arms below ${stop - 3} °C using ${draft?.temperature_source === 'gpu' ? 'GPU temperature' : draft?.temperature_source === 'hotspot' ? 'hotspot temperature' : 'the hotter sensor'}.${state?.manual ? active ? ' Stop requested.' : ' Stop not requested.' : ''}`;
 }
+function nativeCurveSupported() {
+  const info = state?.curve_info;
+  return info ? (info.native_curve_supported ?? info.supported) : true;
+}
+function hostPwmSupported() {
+  const info = state?.curve_info;
+  return info ? (info.host_pwm_supported ?? info.supported) : true;
+}
+function hardwareWritable() {
+  return state?.curve_info?.writable ?? true;
+}
 function sensorFeedback() {
   const source = draft?.temperature_source ?? 'gpu';
+  const nativeSupported = nativeCurveSupported();
   const label = source === 'gpu' ? 'GPU temperature' : source === 'hotspot' ? 'Hotspot temperature' : 'Firmware temperature';
   el('temperature-axis').textContent = `${label} (°C)`;
   chart.setAttribute('aria-label', `Fan curve: ${label.toLowerCase()} in degrees Celsius and fan speed in percent`);
-  el('sensor-help').textContent = source === 'firmware'
+  el('sensor-help').textContent = !nativeSupported && source === 'firmware'
+    ? 'Driver / firmware sensor is unavailable with this backend (host-PWM control only). Choose GPU temperature or Junction / hotspot.'
+    : source === 'firmware'
     ? 'The driver chooses the curve sensor. Zero RPM uses the hotter reading.'
+    : !nativeSupported
+    ? `Uses ${source === 'gpu' ? 'GPU' : 'hotspot'} temperature. Updates every second; both thermal safeguards stay active. Driver / firmware sensor is unavailable with this backend.`
     : `Uses ${source === 'gpu' ? 'GPU' : 'hotspot'} temperature. Updates every second; both thermal safeguards stay active.`;
   el('temperature-source').title = el('sensor-help').textContent;
 }
@@ -169,8 +194,12 @@ function stale() { return !state?.sampled_at_ms || Date.now() - state.sampled_at
 function controls() {
   const locked = pending || !!state?.manual || !state?.ready;
   for (const field of el('points').querySelectorAll('input')) field.disabled = locked;
-  const writable = !!state?.ready && !!state.selected && !!state.curve_info?.supported;
+  const nativeSupported = nativeCurveSupported();
+  const curveSupported = !!state?.curve_info?.supported && (nativeSupported || hostPwmSupported());
+  const canWrite = hardwareWritable();
+  const writable = !!state?.ready && !!state.selected && curveSupported && canWrite;
   const source = draft?.temperature_source ?? 'gpu';
+  const firmwareAllowed = source !== 'firmware' || !state?.curve_info || nativeSupported;
   const sensorAvailable = source === 'firmware' || (source === 'gpu' ? state?.sample?.edge_c : state?.sample?.hotspot_c) != null;
   el<HTMLButtonElement>('save').disabled = locked || !draft || !dirty;
   el<HTMLButtonElement>('save-settings').disabled = locked || !draft || !dirty;
@@ -178,21 +207,26 @@ function controls() {
   el<HTMLButtonElement>('import-settings').disabled = locked || !draft;
   input('custom-control').checked = !!state?.manual;
   // Turning off remains available even with missing telemetry or changed capabilities.
-  input('custom-control').disabled = pending || (state?.manual ? !state.ready || !state.selected : !writable || dirty || !state?.sample || stale() || !sensorAvailable);
-  el<HTMLButtonElement>('automatic').disabled = pending || !state?.ready || !state.selected;
+  input('custom-control').disabled = pending || (state?.manual ? !state.ready || !state.selected : !writable || dirty || !state?.sample || stale() || !sensorAvailable || !firmwareAllowed);
+  el<HTMLButtonElement>('automatic').disabled = pending || !state?.ready || !state.selected || (!canWrite && !state?.manual);
   el<HTMLSelectElement>('adapter').disabled = locked;
   el<HTMLSelectElement>('polling').disabled = locked;
-  el<HTMLSelectElement>('temperature-source').disabled = locked;
+  const sourceSelect = el<HTMLSelectElement>('temperature-source');
+  sourceSelect.disabled = locked;
+  const firmwareOption = sourceSelect.querySelector<HTMLOptionElement>('option[value="firmware"]');
+  if (firmwareOption) firmwareOption.disabled = !!state?.curve_info && !nativeSupported;
   input('start-tray').disabled = locked;
   // An enabled option must remain removable even if the current driver loses support.
   input('zero-rpm').disabled = locked || (!state?.curve_info?.zero_rpm_supported && !input('zero-rpm').checked);
   input('zero-threshold').disabled = locked || !input('zero-rpm').checked;
   for (const hit of chart.querySelectorAll('.hit')) hit.setAttribute('aria-disabled', String(locked));
-  el('mode').textContent = state?.manual ? 'Custom curve active' : state?.ready ? 'Custom control off' : 'Connecting';
+  el('mode').textContent = state?.manual ? 'Custom curve active' : !state?.ready ? 'Connecting' : state.curve_info && !canWrite ? 'Read-only' : 'Custom control off';
   el('control-help').textContent = pending ? 'Updating fan control…' : state?.manual
     ? state.config.custom_control_enabled
       ? 'Your saved curve controls the fans and will resume when the app starts. Turn off to restore driver defaults.'
       : 'Custom control may still be active. Use driver defaults to retry restoration.'
+    : state?.curve_info && !canWrite ? 'Fan control is read-only without hwmon PWM write permissions (monitoring and backup export still work). Grant access with the 60-amd-fan-control.rules udev rule.'
+    : !firmwareAllowed ? 'Driver / firmware sensor is unavailable with this backend. Choose GPU temperature or Junction / hotspot.'
     : state?.sample && !sensorAvailable ? 'Selected temperature sensor unavailable. Choose another curve temperature.'
     : dirty ? 'Save your changes before turning on. Turn off restores driver defaults.'
     : 'On: saved curve · Off: driver defaults. Your choice is remembered after restart.';
@@ -231,13 +265,21 @@ function update(s: Status) {
     for (const adapter of s.adapters) select.append(new Option(`${adapter.name} · ${adapter.id}`, adapter.id));
   }
   select.value = draft?.adapter_id ?? s.selected?.id ?? '';
-  el('gpu-name').textContent = s.selected ? `${s.selected.name} · Overdrive ${s.selected.od_version}` : s.ready ? 'No GPU selected' : 'Connecting to GPU…';
+  el('gpu-name').textContent = s.selected
+    ? s.selected.od_version != null ? `${s.selected.name} · Overdrive ${s.selected.od_version}` : s.selected.name
+    : s.ready ? 'No GPU selected' : 'Connecting to GPU…';
   const sample = stale() ? null : s.sample;
   for (const [id, value, unit] of [['edge', sample?.edge_c, '°C'], ['hotspot', sample?.hotspot_c, '°C'], ['rpm', sample?.rpm, 'RPM'], ['percent', sample?.speed_percent, '%']] as const) {
     const small = document.createElement('small'); small.textContent = unit;
     el(id).replaceChildren(document.createTextNode(`${value ?? '—'} `), small);
   }
-  if (!dirty && !pending) el('feedback').textContent = s.manual ? 'Curve verified in the driver. Turn custom control off before editing.' : s.curve_info?.supported ? 'Custom control is off. Your saved curve is ready to use.' : 'Fan curve control is unavailable with this driver.';
+  if (!dirty && !pending) el('feedback').textContent = s.manual
+    ? 'Curve verified in the driver. Turn custom control off before editing.'
+    : s.curve_info && !hardwareWritable()
+    ? 'Read-only monitoring mode: fan control writes are not permitted. Install the 60-amd-fan-control.rules udev rule for hwmon PWM access and reload udev rules.'
+    : s.curve_info?.supported
+    ? 'Custom control is off. Your saved curve is ready to use.'
+    : 'Fan curve control is unavailable with this driver.';
   controls();
 }
 
@@ -356,6 +398,12 @@ async function checkForUpdates() {
   setUpdateButton('Checking…', true);
   showUpdateStatus('Checking GitHub for a signed update…');
   try {
+    const bundleType = await invoke<string | null>('bundle_type').catch(() => null);
+    if (bundleType === 'deb' || bundleType === 'rpm') {
+      setUpdateButton('Check for updates');
+      showUpdateStatus(`In-place updates are not supported for .${bundleType} installs. Please update using the latest .${bundleType} release package from GitHub Releases.`);
+      return;
+    }
     const { check } = await import('@tauri-apps/plugin-updater');
     const update = await check();
     if (!update) {

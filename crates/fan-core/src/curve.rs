@@ -76,9 +76,12 @@ pub fn zero_rpm_stop_temperature(points: &[Point], below_percent: i32) -> Result
     unreachable!("validated curves reach 100%");
 }
 
+pub const HOST_PWM_STEPDOWN_BAND_C: f64 = 3.0;
+pub const HOST_PWM_STEPDOWN_DELAY: Duration = Duration::from_secs(6);
+
 /// Host-PWM controller for future sysfs/legacy backends. Never used for native OD8.
 /// Rise immediately; lower only after the entire delay below the temperature band.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct StepDown {
     held_temperature: Option<f64>,
     cooling_since: Option<Instant>,
@@ -101,6 +104,21 @@ impl StepDown {
         }
         *held
     }
+}
+
+pub fn host_pwm_target_speed(
+    points: &[Point],
+    step_down: &mut StepDown,
+    temperature_c: i32,
+    now: Instant,
+) -> i32 {
+    let held = step_down.temperature(
+        f64::from(temperature_c),
+        HOST_PWM_STEPDOWN_BAND_C,
+        HOST_PWM_STEPDOWN_DELAY,
+        now,
+    );
+    interpolate(points, held).ceil() as i32
 }
 
 #[cfg(test)]
@@ -154,5 +172,19 @@ mod tests {
         assert_eq!(h.temperature(60.0, 3.0, delay, now + delay), 70.0);
         assert_eq!(h.temperature(61.0, 3.0, delay, now + delay * 2), 61.0);
         assert_eq!(h.temperature(80.0, 3.0, delay, now + delay * 2), 80.0);
+    }
+    #[test]
+    fn host_pwm_target_speed_applies_stepdown_and_rounds_up() {
+        let p = points();
+        let mut step_down = StepDown::default();
+        let now = Instant::now();
+        // 65 °C -> 60%, 50 °C -> 40%.
+        assert_eq!(host_pwm_target_speed(&p, &mut step_down, 65, now), 60);
+        // Cooling below band holds 60% until delay elapses.
+        assert_eq!(host_pwm_target_speed(&p, &mut step_down, 50, now), 60);
+        assert_eq!(
+            host_pwm_target_speed(&p, &mut step_down, 50, now + HOST_PWM_STEPDOWN_DELAY),
+            40
+        );
     }
 }

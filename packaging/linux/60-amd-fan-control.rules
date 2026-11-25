@@ -1,0 +1,5 @@
+# AMD Fan Control — grant local active-session write access strictly to pwm1
+# and pwm1_enable on AMD (0x1002) amdgpu hwmon devices without exposing clocks,
+# voltages, or power limits.
+ACTION=="add|change", SUBSYSTEM=="hwmon", ATTR{name}=="amdgpu", SUBSYSTEMS=="pci", ATTRS{vendor}=="0x1002", DRIVERS=="amdgpu", TEST=="pwm1", TAG+="uaccess", RUN+="/bin/chgrp video /sys%p/pwm1", RUN+="/bin/chmod 0664 /sys%p/pwm1"
+ACTION=="add|change", SUBSYSTEM=="hwmon", ATTR{name}=="amdgpu", SUBSYSTEMS=="pci", ATTRS{vendor}=="0x1002", DRIVERS=="amdgpu", TEST=="pwm1_enable", TAG+="uaccess", RUN+="/bin/chgrp video /sys%p/pwm1_enable", RUN+="/bin/chmod 0664 /sys%p/pwm1_enable"

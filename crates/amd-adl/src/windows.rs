@@ -130,7 +130,7 @@ impl GpuBackend for AdlBackend {
                 index: a.index,
                 id: string(&a.id),
                 name: string(&a.name),
-                od_version: a.od_version,
+                od_version: (a.od_version > 0).then_some(a.od_version),
             })
             .collect())
     }
@@ -155,8 +155,12 @@ impl GpuBackend for AdlBackend {
         let mut raw = RawCurve::default();
         // SAFETY: bridge fills one initialized C-compatible output structure.
         self.check(unsafe { afc_curve_info(self.handle.as_ptr(), &mut raw) })?;
+        let supported = raw.supported != 0;
         Ok(CurveInfo {
-            supported: raw.supported != 0,
+            supported,
+            native_curve_supported: supported,
+            host_pwm_supported: supported,
+            writable: supported,
             zero_rpm_supported: raw.zero_rpm_supported != 0,
             zero_rpm_enabled: raw.zero_rpm_enabled != 0,
             current: raw.current,
