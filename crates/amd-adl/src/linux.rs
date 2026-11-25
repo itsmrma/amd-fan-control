@@ -166,16 +166,19 @@ impl SysfsBackend {
                     if run_user.is_dir() {
                         run_user.join("amd-fan-control")
                     } else {
-                        std::env::temp_dir().join(format!("amd-fan-control-{uid}"))
+                        PathBuf::from(format!("/tmp/amd-fan-control-{uid}"))
                     }
                 }
-                None => std::env::temp_dir().join("amd-fan-control"),
+                None => PathBuf::from("/tmp/amd-fan-control"),
             }
         } else {
             let canonical = fs::canonicalize(&self.root).unwrap_or_else(|_| self.root.clone());
             let mut hasher = DefaultHasher::new();
             canonical.hash(&mut hasher);
-            std::env::temp_dir().join(format!("amd-fan-control-root-{:016x}", hasher.finish()))
+            PathBuf::from(format!(
+                "/tmp/amd-fan-control-root-{:016x}",
+                hasher.finish()
+            ))
         };
         let mut hasher = DefaultHasher::new();
         adapter_id.hash(&mut hasher);
@@ -183,6 +186,7 @@ impl SysfsBackend {
     }
 
     fn acquire_lock(&mut self) -> Result<()> {
+        use std::os::unix::fs::DirBuilderExt;
         let id = self
             .selected
             .as_ref()
@@ -198,7 +202,10 @@ impl SysfsBackend {
         }
         let path = self.lock_path(&id);
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
+            fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(parent)
                 .with_context(|| format!("Creating lock directory {}", parent.display()))?;
         }
         let file = fs::OpenOptions::new()
