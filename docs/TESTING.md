@@ -69,11 +69,11 @@ npm run test:ui
 cargo fmt --all --check
 cargo test --locked --workspace
 cargo clippy --locked --workspace --all-targets -- -D warnings
-npm run tauri build -- --bundles msi,nsis
+npm run tauri build -- --bundles nsis
 ```
 
 Automated tests cover curve/policy/configuration and fake-backend failure handling without GPU writes. Browser checks use mocked IPC; they cannot validate ADL/WebView2 behavior.
 
-CI packages MSI, NSIS, and a GUI/CLI ZIP with SHA-256 checksums. Installers bootstrap WebView2; ZIP builds need an existing runtime. Measure release CPU/memory including associated WebView2 processes, separately for visible and hidden windows.
+CI packages the NSIS setup and a GUI/CLI ZIP with SHA-256 checksums. The setup bootstraps WebView2; ZIP builds need an existing runtime. Measure release CPU/memory including associated WebView2 processes, separately for visible and hidden windows.
 
 For issues, include GPU/board, driver version, PCI ID, config, timestamps, readings, and actual fan behavior.

@@ -291,6 +291,47 @@ test('checks for a signed update and installs it from the header', async ({ page
   expect(await page.evaluate(() => window.updateInstalled)).toBe(true);
 });
 
+test('up-to-date confirmation can be dismissed and hides itself', async ({ page }) => {
+  await page.route('**/node_modules/.vite/deps/@tauri-apps_plugin-updater.js*', route => route.fulfill({
+    contentType: 'text/javascript',
+    body: 'export const check=async()=>null;',
+  }));
+  await page.clock.install();
+  await page.getByRole('button', { name: 'Check for updates' }).click();
+  await expect(page.locator('#update-status')).toContainText('latest version');
+  await page.clock.fastForward(8000);
+  await expect(page.locator('#update-status')).toBeHidden();
+  await page.getByRole('button', { name: 'Check for updates' }).click();
+  await expect(page.locator('#update-status')).toContainText('latest version');
+  await page.getByRole('button', { name: 'Dismiss update message' }).click();
+  await expect(page.locator('#update-status')).toBeHidden();
+});
+
+test('long release notes stay collapsed and the banner stays compact', async ({ page }) => {
+  const longNotes = 'Detailed change log entry with plenty of text. '.repeat(120);
+  await page.route('**/node_modules/.vite/deps/@tauri-apps_plugin-updater.js*', route => route.fulfill({
+    contentType: 'text/javascript',
+    body: `export const check=async()=>({version:"0.1.0-alpha.9",body:${JSON.stringify(longNotes)},downloadAndInstall:async()=>{}});`,
+  }));
+  await page.getByRole('button', { name: 'Check for updates' }).click();
+  await expect(page.locator('#update-status')).toContainText('Version 0.1.0-alpha.9 is available');
+  await expect(page.locator('#update-notes-text')).not.toBeVisible();
+  expect((await page.locator('#update-status').boundingBox()).height).toBeLessThan(90);
+  await page.getByText('Release notes', { exact: true }).click();
+  await expect(page.locator('#update-notes-text')).toBeVisible();
+  expect((await page.locator('#update-notes-text').boundingBox()).height).toBeLessThanOrEqual(180);
+  await page.getByRole('button', { name: 'Dismiss update message' }).click();
+  await expect(page.locator('#update-status')).toBeHidden();
+});
+
+test('backup actions live at the bottom of the settings panel', async ({ page }) => {
+  const panel = page.locator('.settings-panel');
+  await expect(panel.getByRole('button', { name: 'Export settings…' })).toBeVisible();
+  await expect(panel.getByRole('button', { name: 'Import settings…' })).toBeVisible();
+  await expect(panel.locator('.backup')).toBeVisible();
+  await expect(page.locator('.curve-panel').getByRole('button', { name: 'Export settings…' })).toHaveCount(0);
+});
+
 test('the legend explains the cutoff and buttons expose hover help', async ({ page }) => {
   await expect(page.locator('#zero-legend')).toContainText('fans may stop below 42 °C');
   await expect(page.locator('#zero-legend')).toContainText('Firmware decides');
