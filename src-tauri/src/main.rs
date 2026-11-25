@@ -100,6 +100,24 @@ fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
     }
     .map_err(|e| e.to_string())
 }
+
+fn bundle_type_name(bundle: Option<tauri::utils::config::BundleType>) -> Option<&'static str> {
+    use tauri::utils::config::BundleType;
+    match bundle? {
+        BundleType::Deb => Some("deb"),
+        BundleType::Rpm => Some("rpm"),
+        BundleType::AppImage => Some("appimage"),
+        BundleType::Nsis => Some("nsis"),
+        BundleType::Msi => Some("msi"),
+        BundleType::App => Some("app"),
+        _ => None,
+    }
+}
+
+#[tauri::command]
+fn bundle_type() -> Option<&'static str> {
+    bundle_type_name(tauri::utils::platform::bundle_type())
+}
 fn show(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
@@ -122,7 +140,8 @@ fn main() {
             apply_curve,
             restore_automatic,
             autostart_enabled,
-            set_autostart
+            set_autostart,
+            bundle_type
         ])
         .setup(|app| {
             let open = MenuItem::with_id(app, "open", "Open AMD Fan Control", true, None::<&str>)?;
@@ -220,5 +239,18 @@ mod tests {
 
         std::fs::write(&path, vec![b'x'; (MAX_IMPORT_BYTES + 1) as usize]).unwrap();
         assert!(read_import(&path).unwrap_err().contains("too large"));
+    }
+
+    #[test]
+    fn bundle_type_name_maps_supported_packages_and_none() {
+        use tauri::utils::config::BundleType;
+        assert_eq!(bundle_type_name(Some(BundleType::Deb)), Some("deb"));
+        assert_eq!(bundle_type_name(Some(BundleType::Rpm)), Some("rpm"));
+        assert_eq!(
+            bundle_type_name(Some(BundleType::AppImage)),
+            Some("appimage")
+        );
+        assert_eq!(bundle_type_name(Some(BundleType::Nsis)), Some("nsis"));
+        assert_eq!(bundle_type_name(None), None);
     }
 }

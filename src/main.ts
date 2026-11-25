@@ -398,6 +398,12 @@ async function checkForUpdates() {
   setUpdateButton('Checking…', true);
   showUpdateStatus('Checking GitHub for a signed update…');
   try {
+    const bundleType = await invoke<string | null>('bundle_type').catch(() => null);
+    if (bundleType === 'deb' || bundleType === 'rpm') {
+      setUpdateButton('Check for updates');
+      showUpdateStatus(`In-place updates are not supported for .${bundleType} installs. Please update using the latest .${bundleType} release package from GitHub Releases.`);
+      return;
+    }
     const { check } = await import('@tauri-apps/plugin-updater');
     const update = await check();
     if (!update) {

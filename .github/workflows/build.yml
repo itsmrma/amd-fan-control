@@ -52,6 +52,8 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - run: npm ci
       - run: npm run build
+      - name: Updater manifest validation tests
+        run: node --test tests/updater-manifest.test.mjs
       - name: Browser regression tests (mocked GPU)
         run: |
           npx playwright install chromium
@@ -156,6 +158,8 @@ jobs:
             rpm
       - run: npm ci
       - run: npm run build
+      - name: Updater manifest validation tests
+        run: node --test tests/updater-manifest.test.mjs
       - name: Browser regression tests (mocked GPU)
         run: |
           npx playwright install --with-deps chromium
@@ -284,6 +288,7 @@ jobs:
               }
             }' \
             > release/latest.json
+          node scripts/validate-updater-manifest.mjs release/latest.json "$version"
           hash="$(sha256sum release/latest.json | awk '{print $1}')"
           printf '%s  latest.json\n' "$hash" >> release/SHA256SUMS.txt
       - name: Publish alpha assets
@@ -327,10 +332,15 @@ jobs:
               --title "AMD Fan Control update manifest" \
               --notes "Stable URL for the desktop updater. Download the versioned release instead of installing this one."
           fi
-          # Verify the stable endpoint is live before declaring success, so a
-          # broken rolling release fails the build instead of shipping a
-          # 404 to every installed client.
+          # Verify the stable endpoint is live and contains valid Windows and
+          # Linux entries before declaring success, so a broken rolling release
+          # fails the build instead of shipping a broken manifest to clients.
           gh release view updater --json tagName,assets --jq '.tagName as $t | .assets[] | select(.name=="latest.json") | "latest.json on \($t)"'
+          version="${GITHUB_REF_NAME#v}"
+          verify_dir="$(mktemp -d)"
+          gh release download updater --pattern latest.json --dir "$verify_dir" --clobber
+          node scripts/validate-updater-manifest.mjs "$verify_dir/latest.json" "$version"
+          rm -rf "$verify_dir"
       - name: No-op for non-release refs
         # The expression must be wrapped in ${{ }}: a bare `!startsWith(...)`
         # starts with a YAML tag indicator, which makes the whole workflow
