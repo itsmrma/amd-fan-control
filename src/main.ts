@@ -311,9 +311,21 @@ async function importSettings() {
   finally { pending = false; controls(); }
 }
 
-function showUpdateStatus(message: string, progress?: { value: number; max: number }) {
+let updateStatusTimer: number | undefined;
+function hideUpdateStatus() {
+  window.clearTimeout(updateStatusTimer);
+  el<HTMLDivElement>('update-status').hidden = true;
+}
+function showUpdateStatus(message: string, progress?: { value: number; max: number }, options?: { notes?: string; autoHideMs?: number }) {
+  window.clearTimeout(updateStatusTimer);
   el<HTMLDivElement>('update-status').hidden = false;
   el('update-feedback').textContent = message;
+  // Release notes can be long: keep them collapsed so the banner stays small.
+  const notes = options?.notes?.trim() ?? '';
+  const details = el<HTMLDetailsElement>('update-notes');
+  details.hidden = !notes;
+  details.open = false;
+  el('update-notes-text').textContent = notes;
   const bar = el<HTMLProgressElement>('update-progress');
   if (progress) {
     bar.max = progress.max;
@@ -324,6 +336,7 @@ function showUpdateStatus(message: string, progress?: { value: number; max: numb
     bar.value = 0;
     bar.max = 100;
   }
+  if (options?.autoHideMs) updateStatusTimer = window.setTimeout(hideUpdateStatus, options.autoHideMs);
 }
 
 function setUpdateButton(label: string, disabled = false) {
@@ -347,13 +360,12 @@ async function checkForUpdates() {
     const update = await check();
     if (!update) {
       setUpdateButton('Check for updates');
-      showUpdateStatus(`You are running the latest version (v${__APP_VERSION__}).`);
+      showUpdateStatus(`You are running the latest version (v${__APP_VERSION__}).`, undefined, { autoHideMs: 8000 });
       return;
     }
     availableUpdate = update;
-    const notes = update.body?.trim();
     setUpdateButton(`Install v${update.version}`);
-    showUpdateStatus(`Version ${update.version} is available.${notes ? ` ${notes}` : ''} It is signed by the GitHub release build.`);
+    showUpdateStatus(`Version ${update.version} is available. It is signed by the GitHub release build.`, undefined, { notes: update.body });
   } catch (error) {
     setUpdateButton('Check for updates');
     showUpdateStatus(`Could not check for updates: ${error}`);
@@ -398,6 +410,7 @@ async function installUpdate() {
 el('update-button').addEventListener('click', () => {
   void (availableUpdate ? installUpdate() : checkForUpdates());
 });
+el('update-dismiss').addEventListener('click', hideUpdateStatus);
 el('save').addEventListener('click', saveDraft);
 el('save-settings').addEventListener('click', saveDraft);
 el('export-settings').addEventListener('click', exportSettings);
