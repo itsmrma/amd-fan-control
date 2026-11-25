@@ -10,7 +10,10 @@ I got tired of using MSI Afterburner, so I built a fan-control app for my own gr
 
 This is a personal project built around that card. **It is not a universal AMD fan controller, and I cannot guarantee it will work on other cards.** Even another RX 5600 XT can behave differently with a different board BIOS or driver.
 
-![AMD Fan Control interface preview with simulated telemetry from browser tests](assets/screenshot.png)
+<p align="center">
+  <img src="assets/screenshot.png" width="49%" alt="AMD Fan Control in dark appearance with simulated telemetry from browser tests" />
+  <img src="assets/screenshot-light.png" width="49%" alt="AMD Fan Control in light appearance with simulated telemetry from browser tests" />
+</p>
 
 ## Compatibility
 
@@ -38,17 +41,17 @@ Older GCN cards (Polaris/Vega), integrated graphics, laptop-controlled fans, and
 - Descriptive button labels and hover help, plus a labeled Zero RPM cutoff on the chart.
 - Optional **Zero RPM below a configurable curve-speed threshold**, initially **25%**.
 - Persistent Settings panel, beside the curve in wide windows and below it in smaller windows.
-- Export and import the curve and settings as a JSON file for backups or a new Windows installation.
-- **Check for updates** in the header, with one-click install of a newer release after its GitHub signature is verified.
+- **Backup** section at the bottom of Settings: export and import the curve and settings as a JSON file for backups or a new Windows installation.
+- **Check for updates** in the header, with one-click install of a newer release after its GitHub signature is verified. Update messages are compact and dismissible; release notes stay collapsed until you open them.
 - Automatic fan-default restoration, tray, optional Windows autostart, and start in tray.
 - System light/dark appearance, local JSON, and a small vanilla TypeScript frontend.
-- MSI, NSIS installer, and portable ZIP builds through GitHub Actions.
+- NSIS setup executable and portable ZIP builds through GitHub Actions.
 
 Only fan-related settings are written. Clocks, voltages, and power limits are untouched.
 
 ## Getting started
 
-Download from [Releases](https://github.com/itsmrma/amd-fan-control/releases). Installers handle WebView2; portable builds require it already installed. ADL is loaded from the AMD driver's `atiadlxx.dll` in System32; no separate DLL download is needed.
+Download from [Releases](https://github.com/itsmrma/amd-fan-control/releases): the NSIS `-setup.exe` installer or the portable ZIP. The setup handles WebView2; portable builds require it already installed. ADL is loaded from the AMD driver's `atiadlxx.dll` in System32; no separate DLL download is needed.
 
 Use **Check for updates** in the header to ask GitHub for a newer release. If one exists, the button becomes **Install**; the app downloads the NSIS package, verifies its Tauri minisign signature, runs the installer, and restarts. Update checks are manual only. The updater accepts only packages produced and signed by the project's GitHub Actions release workflow; local builds cannot replace a release. Windows Authenticode signing still requires a separately purchased certificate, so alpha installers remain unsigned by Windows itself.
 
@@ -64,7 +67,9 @@ The custom-control switch is remembered immediately. If it was on, the app attem
 
 Configuration lives at `%APPDATA%\amd-fan-control\config.json`. Windows autostart takes effect immediately; other settings require **Save all changes**, which saves the whole draft including the curve. Missing GPU/sensors, unsafe temperatures or driver rejection block startup restoration and show an error; the app does not repeatedly retry a rejected curve.
 
-Use **Export settings** to save the current curve and settings as JSON, and **Import settings** to load a previous backup into the editor. Imported values are not applied automatically: review them, save, then turn on **Use custom fan curve**. The exported file leaves out the current on/off switch choice, so restoring a backup never starts fan control by itself. The same JSON format works for `config.example.json` and a copied `config.json`.
+The **Backup** section at the bottom of Settings holds **Export settings…** and **Import settings…**. Export saves the current curve and settings as JSON; import loads a previous backup into the editor. Imported values are not applied automatically: review them, save, then turn on **Use custom fan curve**. The exported file leaves out the current on/off switch choice, so restoring a backup never starts fan control by itself. The same JSON format works for `config.example.json` and a copied `config.json`.
+
+<img src="assets/screenshot-backup.png" width="340" alt="Settings panel with the Backup section: Export settings and Import settings buttons" />
 
 ### Curve temperature
 
@@ -123,7 +128,7 @@ npm run test:ui
 cargo fmt --all --check
 cargo test --locked --workspace
 cargo clippy --locked --workspace --all-targets -- -D warnings
-npm run tauri build -- --bundles msi,nsis
+npm run tauri build -- --bundles nsis
 ```
 
 | Directory | Purpose |
@@ -139,10 +144,12 @@ See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for ownership and recovery details.
 
 ## Builds and releases
 
-[CI](.github/workflows/build.yml) runs core tests on Linux, Windows tests/lint, and MSI/NSIS/ZIP packaging. Normal builds produce Actions artifacts; a `v*` tag publishes a prerelease after checks pass, with SHA-256 checksums. Release publishing uses `GITHUB_TOKEN`, with `contents: write` scoped to the release job. Windows artifacts carry GitHub build-provenance attestations.
+[CI](.github/workflows/build.yml) runs core tests on Linux, Windows tests/lint, and NSIS/ZIP packaging. Normal builds produce Actions artifacts; a `v*` tag publishes a prerelease after checks pass, with SHA-256 checksums. Release publishing uses `GITHUB_TOKEN`, with `contents: write` scoped to the release job. Windows artifacts carry GitHub build-provenance attestations.
 
 `bundle.createUpdaterArtifacts` makes Tauri sign each installer with the update key. The release job copies the `.sig` files, writes `latest.json` for `windows-x86_64`, and refreshes the rolling `updater` release. The app checks `https://github.com/itsmrma/amd-fan-control/releases/download/updater/latest.json`, so prerelease tags can be discovered. The matching private key exists only in the `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` Actions secrets. To rotate the key, generate a new pair with `npm run tauri signer generate`, replace the public key in `src-tauri/tauri.conf.json`, and update both secrets in the same release. Users on a build signed with the previous key must install that release manually.
 
-Keep `Cargo.toml`, `package.json`, lockfiles, and `src-tauri/tauri.conf.json` versions aligned before tagging. MSI uses a separate numeric version.
+Keep `Cargo.toml`, `package.json`, lockfiles, and `src-tauri/tauri.conf.json` versions aligned before tagging.
+
+README screenshots are regenerated from the mocked browser preview with `node scripts/capture-screenshots.mjs` while `npm run dev -- --port 1421` is running.
 
 MIT. Independent project, not affiliated with AMD or MSI. [Third-party notices](THIRD_PARTY_NOTICES.md).

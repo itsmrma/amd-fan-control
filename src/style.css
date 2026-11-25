@@ -27,9 +27,14 @@ p { margin: 0; }
 .app-header p { overflow-wrap: anywhere; }
 .version { margin-left: auto; flex-shrink: 0; color: var(--muted); font-size: 13px; }
 .update-button { flex: 0 0 auto; min-height: 36px; padding: 8px 12px; white-space: nowrap; }
-.update-status { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 14px; margin: -12px 0 18px; padding: 10px 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--muted); font-size: 13px; line-height: 1.45; }
+.update-status { display: flex; align-items: center; gap: 10px 14px; margin: -12px 0 18px; padding: 8px 10px 8px 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--muted); font-size: 13px; line-height: 1.45; }
+.update-body { flex: 1 1 auto; min-width: 0; display: grid; gap: 6px; }
 #update-feedback { overflow-wrap: anywhere; }
-#update-progress { width: 160px; max-width: 100%; accent-color: var(--accent); }
+#update-notes summary { cursor: pointer; width: fit-content; color: var(--accent); }
+#update-notes-text { margin-top: 6px; white-space: pre-wrap; max-height: 180px; overflow: auto; user-select: text; -webkit-user-select: text; }
+#update-progress { width: 160px; max-width: 100%; flex: 0 1 160px; accent-color: var(--accent); }
+.update-dismiss { flex: 0 0 auto; width: 28px; min-height: 28px; padding: 0; border-radius: 7px; background: transparent; color: var(--muted); font-size: 16px; line-height: 1; }
+.update-dismiss:hover { background: var(--soft); color: var(--accent); filter: none; }
 .telemetry { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); padding-bottom: 24px; gap: 20px; }
 .telemetry span { font-size: 13px; color: var(--muted); }
 strong { display: block; font-size: clamp(28px, 2.5vw, 38px); font-weight: 600; font-variant-numeric: tabular-nums; margin-top: 5px; }
@@ -88,6 +93,13 @@ button:disabled { opacity: .45; cursor: default; filter: none; }
 #error-detail-text { margin-top: 8px; white-space: pre-wrap; }
 .settings-panel h2 { margin-bottom: 20px; }
 .settings-panel { container-type: inline-size; }
+/* Balance the save row: less air above the button, clear separation below. */
+.settings-panel .actions { margin-top: 8px; }
+.backup { border: 0; border-top: 1px solid var(--line); padding: 0; margin: 14px 0 0; min-width: 0; }
+.backup legend { font-size: 13px; font-weight: 600; color: var(--muted); padding: 0 8px 0 0; }
+.backup .hint { margin-top: 8px; }
+.backup .actions { margin-top: 10px; }
+.backup-actions button { flex: 1 1 0; min-width: 0; min-height: 36px; padding: 8px; white-space: nowrap; }
 .settings { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .settings label { display: flex; flex-direction: column; gap: 7px; font-size: 13px; }
 .settings label.check { flex-direction: row; align-items: center; gap: 10px; min-height: 44px; }
@@ -109,9 +121,13 @@ footer { display: flex; justify-content: space-between; gap: 16px; margin-top: 2
 }
 @media (min-width: 1200px) {
   main { height: 100svh; }
-  .workspace { grid-template-columns: minmax(0, 1fr) 300px; align-items: stretch; }
+  .workspace { grid-template-columns: minmax(0, 1fr) 300px; grid-template-rows: minmax(0, 1fr); align-items: stretch; }
   .chart-container { height: auto; }
-  .workspace, .curve-panel { min-height: min-content; }
+  .curve-panel { min-height: min-content; }
+  /* Let the workspace shrink to the window; Settings scrolls inside instead
+     of stretching the page when its content (Backup section) is taller. */
+  .workspace { min-height: 0; }
+  .settings-panel { overflow-y: auto; }
 }
 @media (min-width: 1200px) and (max-height: 900px) {
   main { padding: 16px 20px; }

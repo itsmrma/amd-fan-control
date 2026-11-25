@@ -12,12 +12,16 @@
       <header class="app-header">
         <img class="app-logo" src="/assets/icon.svg" width="44" height="44" alt="" draggable="false" />
         <div class="identity"><h1>AMD Fan Control</h1><p id="gpu-name">Connecting to GPU…</p></div>
-        <span class="version" id="app-version">v0.1.0-alpha.4</span>
+        <span class="version" id="app-version">v0.1.0-alpha5</span>
         <button id="update-button" class="secondary update-button" type="button" title="Check GitHub for a newer signed release. If one is available, install it here.">Check for updates</button>
       </header>
       <div id="update-status" class="update-status" role="status" hidden>
-        <span id="update-feedback"></span>
+        <div class="update-body">
+          <span id="update-feedback"></span>
+          <details id="update-notes" hidden><summary>Release notes</summary><p id="update-notes-text"></p></details>
+        </div>
         <progress id="update-progress" max="100" value="0" hidden></progress>
+        <button id="update-dismiss" class="update-dismiss" type="button" aria-label="Dismiss update message" title="Hide this update message. You can check for updates again at any time.">×</button>
       </div>
       <div id="error" role="alert" hidden>
         <p id="error-message"></p>
@@ -50,10 +54,7 @@
           <div class="actions">
             <button id="save" disabled title="Save the curve and all settings to this computer. Saving does not change fan control; turn on Use custom fan curve to apply it.">Save curve &amp; settings</button>
             <button id="automatic" class="secondary" disabled title="Restore the graphics driver's default fan curve and Zero RPM setting now. Your saved custom curve is kept for later use.">Use driver defaults</button>
-            <button id="export-settings" class="secondary" type="button" disabled title="Save the curve and settings in this draft to a JSON file you can keep or move to another PC.">Export settings…</button>
-            <button id="import-settings" class="secondary" type="button" disabled title="Load a JSON settings file into this draft. Review the values before saving them.">Import settings…</button>
           </div>
-          <p id="backup-feedback" role="status"></p>
           <p id="feedback" role="status">Waiting for the first temperature reading.</p>
         </section>
         <aside class="settings-panel panel" aria-labelledby="settings-title">
@@ -73,7 +74,15 @@
           </div>
           <div class="actions"><button id="save-settings" class="secondary" disabled title="Save all settings and the edited curve to this computer. This does not apply the curve to the GPU.">Save all changes</button></div>
           <p id="settings-feedback" role="status"></p>
-          <p class="hint">Custom control starts off each time you open the app.</p>
+          <fieldset class="backup">
+            <legend>Backup</legend>
+            <p class="hint">Keep or restore a JSON settings backup.</p>
+            <div class="actions backup-actions">
+              <button id="export-settings" class="secondary" type="button" disabled title="Save the curve and settings in this draft to a JSON file you can keep or move to another PC.">Export settings…</button>
+              <button id="import-settings" class="secondary" type="button" disabled title="Load a JSON settings file into this draft. Review the values before saving them.">Import settings…</button>
+            </div>
+            <p id="backup-feedback" role="status"></p>
+          </fieldset>
         </aside>
       </div>
       <footer><span>Closing the window keeps the app in the system tray.</span><span>Quit from the tray menu to restore driver defaults.</span></footer>

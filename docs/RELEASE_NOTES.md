@@ -1,15 +1,14 @@
-Windows x64 alpha 4, built around the AMD Radeon RX 5600 XT.
+Windows x64 alpha 5, built around the AMD Radeon RX 5600 XT.
 
-Changes since alpha 3:
+Changes since alpha 4:
 
-- **Check for updates** is now in the header. It asks GitHub for a newer release, then offers a one-click install. The app verifies the package's Tauri minisign signature, runs the NSIS installer, and restarts. Update checks are manual only.
-- Every Windows artifact is built by GitHub Actions. Release files carry GitHub build-provenance attestations, and installers are signed by the release workflow with the project's update key. The private key exists only in Actions secrets.
-- The rolling `updater` release publishes `latest.json`, so prerelease tags such as alpha 4 are discoverable without a non-prerelease release.
-- Security triage for the vendored GLib 0.18 backport: the unreachable log-level panic no longer formats raw values, debug-only reference-count reads were removed, and `GValue` FFI helpers now reject null pointers before dereferencing. The remaining CodeQL reports are documented FFI false positives in this Linux-only dependency; no advisory is suppressed and the RUSTSEC-2024-0429 fix remains.
-- `main` now requires the portable core, Windows, and CodeQL checks before merging, with stale branches blocked and force pushes/deletions disabled.
-- Version metadata is aligned at `0.1.0-alpha.4`; the MSI numeric version is `0.1.0.4`.
+- **Backup moved into Settings.** Export and import of the JSON settings file now live in a dedicated **Backup** section at the bottom of the Settings panel, with balanced spacing around the save row.
+- **Compact update messages.** The update banner no longer prints the whole release notes inline: notes are collapsed under **Release notes**, the "you are up to date" confirmation disappears on its own after a few seconds, and every message can be dismissed with the × button.
+- **NSIS setup and portable ZIP only.** The MSI installer is discontinued; downloads are the NSIS `-setup.exe` and the portable GUI/CLI ZIP, with SHA-256 checksums. Existing MSI installs can switch by running the NSIS setup.
+- CI fix: a malformed `if:` expression in the release workflow prevented the required build checks from running on pull requests; the workflow now parses and reports checks on every PR.
+- Version metadata is aligned at `0.1.0-alpha5`.
 
-Downloads: Windows x64 MSI installer, NSIS setup executable, and portable GUI/CLI ZIP, with SHA-256 checksums. Installers handle WebView2; portable builds need it already installed. Alpha installers are not Authenticode-signed by Windows; the in-app updater still requires a valid project signature.
+Downloads: Windows x64 NSIS setup executable and portable GUI/CLI ZIP, with SHA-256 checksums. The setup bootstraps WebView2; portable builds need it already installed. Alpha installers are not Authenticode-signed by Windows; the in-app updater still requires a valid project signature.
 
 Hardware notes:
 

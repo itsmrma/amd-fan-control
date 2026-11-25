@@ -60,7 +60,7 @@ jobs:
         run: cargo test --locked --workspace
       - name: Rust lint
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
-      - name: Build MSI and NSIS installer
+      - name: Build NSIS installer
         shell: pwsh
         env:
           RELEASE_BUILD: ${{ startsWith(github.ref, 'refs/tags/') }}
@@ -68,14 +68,14 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           if ($env:RELEASE_BUILD -eq 'true') {
-            npm run tauri build -- --bundles msi,nsis
+            npm run tauri build -- --bundles nsis
           } else {
             # Pull requests never receive the release signing key. Build the
-            # same installers without updater artifacts so fork/Dependabot PRs
+            # same installer without updater artifacts so fork/Dependabot PRs
             # stay testable; tagged releases always sign.
             $config = Join-Path $env:RUNNER_TEMP 'tauri-pr.json'
             Set-Content -Path $config -Value '{"bundle":{"createUpdaterArtifacts":false}}' -Encoding ascii
-            npm run tauri build -- --bundles msi,nsis --config $config
+            npm run tauri build -- --bundles nsis --config $config
           }
       - name: Build diagnostic CLI
         run: cargo build --locked --release -p fan-cli
@@ -91,10 +91,8 @@ jobs:
           Copy-Item config.example.json portable/
           Compress-Archive -Path portable/* -DestinationPath amd-fan-control-windows-x64-portable.zip
           New-Item -ItemType Directory -Path release | Out-Null
-          Copy-Item target/release/bundle/msi/*.msi release/
           Copy-Item target/release/bundle/nsis/*-setup.exe release/
           if ($env:RELEASE_BUILD -eq 'true') {
-            Copy-Item target/release/bundle/msi/*.sig release/
             Copy-Item target/release/bundle/nsis/*.sig release/
           }
           Copy-Item amd-fan-control-windows-x64-portable.zip release/
