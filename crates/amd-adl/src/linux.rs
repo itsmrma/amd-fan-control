@@ -1022,4 +1022,57 @@ mod tests {
         assert_eq!(read_i32(&hwmon.join("pwm1")), Some(153));
         backend2.restore_automatic().unwrap();
     }
+
+    #[test]
+    fn zero_rpm_transitions_and_preserves_permission_denied_in_error_chain() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let pci_dev = create_fake_card(
+            dir.path(),
+            FakeCard {
+                card_name: "card0",
+                pci_slot: "0000:03:00.0",
+                vendor: "0x1002",
+                driver: "amdgpu",
+                product_name: None,
+                device_id: None,
+            },
+        );
+        let hwmon = pci_dev.join("hwmon/hwmon0");
+        fs::create_dir_all(&hwmon).unwrap();
+        fs::write(hwmon.join("name"), "amdgpu\n").unwrap();
+        fs::write(hwmon.join("temp1_input"), "35000\n").unwrap();
+        fs::write(hwmon.join("pwm1_enable"), "2\n").unwrap();
+        fs::write(hwmon.join("pwm1"), "80\n").unwrap();
+        fs::write(hwmon.join("pwm1_min"), "0\n").unwrap();
+
+        let mut backend = SysfsBackend::with_root(dir.path());
+        let adapters = backend.adapters().unwrap();
+        backend.select(&adapters[0]).unwrap();
+
+        backend.apply_speed(30, true).unwrap();
+        assert_eq!(read_i32(&hwmon.join("pwm1_enable")), Some(1));
+        assert_eq!(read_i32(&hwmon.join("pwm1")), Some(0));
+        assert!(backend.curve_info().unwrap().zero_rpm_enabled);
+
+        backend.apply_speed(35, false).unwrap();
+        assert_eq!(read_i32(&hwmon.join("pwm1")), Some(89));
+        assert!(!backend.curve_info().unwrap().zero_rpm_enabled);
+
+        backend.restore_automatic().unwrap();
+
+        fs::set_permissions(hwmon.join("pwm1_enable"), fs::Permissions::from_mode(0o444)).unwrap();
+        let err = backend.apply_speed(30, true).unwrap_err();
+        let has_perm_denied = err.chain().any(|cause| {
+            cause
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|io| io.kind() == std::io::ErrorKind::PermissionDenied)
+        });
+        fs::set_permissions(hwmon.join("pwm1_enable"), fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(
+            has_perm_denied,
+            "expected PermissionDenied in error chain, got: {err:#}"
+        );
+    }
 }

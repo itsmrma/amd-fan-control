@@ -388,6 +388,50 @@ test('read-only permission state blocks control writes while keeping telemetry a
   await expect(page.locator('#mode')).toHaveText('Read-only');
   await expect(page.getByRole('switch')).toBeDisabled();
   await expect(page.locator('#control-help')).toContainText('read-only');
+  await expect(page.locator('#control-help')).toContainText('udev');
+  await expect(page.locator('#feedback')).toContainText('udev');
   await expect(page.locator('#edge')).toContainText('38');
   await expect(page.getByRole('button', { name: 'Export settings…' })).toBeEnabled();
+});
+
+test('Zero RPM rejection keeps Allow fans to stop removable and hides raw details', async ({ page }) => {
+  const control = page.getByRole('switch');
+  const zeroRpm = page.getByRole('checkbox', { name: 'Allow fans to stop' });
+  await expect(zeroRpm).toBeChecked();
+
+  await page.evaluate(() => {
+    window.failApply = 'The GPU driver rejected Zero RPM fan stop. Turn off ‘Allow fans to stop’, save, then try your custom curve again. Driver default fan settings restored.\n\nTechnical details: This GPU/driver does not support Zero RPM (pwm1_min > 0)';
+    window.gpu.curve_info.zero_rpm_supported = false;
+    window.emitStatus();
+  });
+
+  await control.click();
+  await expect(control).not.toBeChecked();
+  await expect(page.locator('#error-message')).toContainText('Allow fans to stop');
+  await expect(page.locator('#error-message')).not.toContainText('pwm1_min');
+  await page.getByText('Technical details', { exact: true }).click();
+  await expect(page.locator('#error-detail-text')).toContainText('pwm1_min > 0');
+
+  // Allow fans to stop stays removable even though zero_rpm_supported is false.
+  await expect(zeroRpm).toBeEnabled();
+  await zeroRpm.uncheck();
+  await page.getByRole('button', { name: 'Save all changes' }).click();
+  await page.evaluate(() => { window.failApply = null; });
+  await expect(control).toBeEnabled();
+  await control.click();
+  await expect(control).toBeChecked();
+});
+
+test('permission-denied error shows actionable udev guidance and tucks OS error under Technical details', async ({ page }) => {
+  const control = page.getByRole('switch');
+  await page.evaluate(() => {
+    window.failApply = 'Missing hardware permissions to write hwmon PWM fan controls. Live monitoring continues in read-only mode; install the 60-amd-fan-control.rules udev rule for hwmon PWM access and reload udev rules. Driver default fan settings restored.\n\nTechnical details: Writing manual mode to /sys/class/drm/card0/device/hwmon/hwmon0/pwm1_enable: Permission denied (os error 13)';
+  });
+  await control.click();
+  await expect(control).not.toBeChecked();
+  await expect(page.locator('#error-message')).toContainText('read-only');
+  await expect(page.locator('#error-message')).toContainText('udev');
+  await expect(page.locator('#error-message')).not.toContainText('os error 13');
+  await page.getByText('Technical details', { exact: true }).click();
+  await expect(page.locator('#error-detail-text')).toContainText('Permission denied (os error 13)');
 });

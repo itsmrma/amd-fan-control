@@ -247,6 +247,9 @@ fn update_sensor_control_at(
     {
         bail!("Fan settings changed outside this app");
     }
+    if s.config.zero_rpm_stop_temperature()?.is_some() && !actual.zero_rpm_supported {
+        bail!("This GPU/driver does not expose Zero RPM control");
+    }
     let zero_rpm = s
         .config
         .zero_rpm_requested(sample, actual.zero_rpm_enabled)?;
@@ -263,13 +266,14 @@ fn update_sensor_control_at(
         }
     } else if actual.host_pwm_supported {
         let speed = requested_host_pwm_speed(s, sample, now)?;
-        if s.applied_speed != Some(speed) || actual.zero_rpm_enabled != zero_rpm {
+        let target_speed = if zero_rpm { 0 } else { speed };
+        if s.applied_speed != Some(target_speed) || actual.zero_rpm_enabled != zero_rpm {
             backend.apply_speed(speed, zero_rpm)?;
             let info = backend.curve_info()?;
             if info.zero_rpm_enabled != zero_rpm {
                 bail!("Driver did not retain the requested sensor-based fan settings");
             }
-            s.applied_speed = Some(speed);
+            s.applied_speed = Some(target_speed);
             s.curve_info = Some(info);
         }
     } else {
@@ -287,13 +291,38 @@ fn update_sensor_control(
     update_sensor_control_at(backend, s, sample, Instant::now())
 }
 
+const READONLY_PERMISSION_MESSAGE: &str = "Fan control is read-only; live monitoring still works, but hardware write permissions are required. Install the 60-amd-fan-control.rules udev rule for hwmon PWM access and reload udev rules (or install the native .deb/.rpm package).";
+const PERMISSION_DENIED_REASON: &str = "Missing hardware permissions to write hwmon PWM fan controls. Live monitoring continues in read-only mode; install the 60-amd-fan-control.rules udev rule for hwmon PWM access and reload udev rules.";
+
+fn is_permission_denied(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|io| io.kind() == std::io::ErrorKind::PermissionDenied)
+    })
+}
+
+fn is_zero_rpm_error(details: &str) -> bool {
+    details.contains("Zero RPM") || details.contains("pwm1_min > 0") || details.contains("pwm1=0")
+}
+
 fn check_sensor_control(backend: &mut dyn GpuBackend, s: &mut Snapshot, sample: &Sample) {
     if let Err(e) = update_sensor_control_at(backend, s, sample, Instant::now()) {
-        s.error = Some(restore_after_failure(
-            backend, s,
-            "Sensor-based fan control stopped. Check the selected sensor, or select Driver / firmware sensor to use the previous control mode.",
-            Some(&format!("{e:#}")),
-        ));
+        let details = format!("{e:#}");
+        let reason = if is_permission_denied(&e) {
+            PERMISSION_DENIED_REASON
+        } else if is_zero_rpm_error(&details) {
+            "The GPU driver rejected Zero RPM fan stop or lost Zero RPM support. Turn off ‘Allow fans to stop’, save, then try your custom curve again."
+        } else if s
+            .curve_info
+            .as_ref()
+            .is_some_and(|info| info.native_curve_supported)
+        {
+            "Sensor-based fan control stopped. Check the selected sensor, or select Driver / firmware sensor to use the previous control mode."
+        } else {
+            "Sensor-based fan control stopped. Check the selected temperature sensor and hardware access."
+        };
+        s.error = Some(restore_after_failure(backend, s, reason, Some(&details)));
     }
 }
 
@@ -402,7 +431,7 @@ fn handle(
             }
             let current_info = backend.curve_info()?;
             if !current_info.writable {
-                bail!("Fan control is read-only; write permissions are required to apply a curve");
+                bail!("{READONLY_PERMISSION_MESSAGE}");
             }
             let (speed, expected_points) =
                 if s.config.temperature_source == TemperatureSource::Firmware {
@@ -444,14 +473,17 @@ fn handle(
                     s.curve_info = Some(info);
                 }
                 Err(e) => {
+                    let details = format!("{e:#}");
+                    let reason = if is_permission_denied(&e) {
+                        PERMISSION_DENIED_REASON
+                    } else if zero_rpm && is_zero_rpm_error(&details) {
+                        "The GPU driver rejected Zero RPM fan stop. Turn off ‘Allow fans to stop’, save, then try your custom curve again."
+                    } else {
+                        "The custom fan curve could not be applied."
+                    };
                     bail!(
                         "{}",
-                        restore_after_failure(
-                            backend,
-                            s,
-                            "The custom fan curve could not be applied.",
-                            Some(&format!("{e:#}"))
-                        )
+                        restore_after_failure(backend, s, reason, Some(&details))
                     );
                 }
             }
@@ -1479,6 +1511,302 @@ mod tests {
                 .unwrap()
                 .trim(),
             "2"
+        );
+    }
+
+    #[test]
+    fn sysfs_worker_zero_rpm_uses_selected_sensor_hysteresis_and_thermal_safety() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let pci_dev = root.join("devices/pci0000:00/0000:03:00.0");
+        std::fs::create_dir_all(&pci_dev).unwrap();
+        std::fs::write(pci_dev.join("vendor"), "0x1002\n").unwrap();
+        std::fs::write(
+            pci_dev.join("uevent"),
+            "DRIVER=amdgpu\nPCI_SLOT_NAME=0000:03:00.0\n",
+        )
+        .unwrap();
+        let card = root.join("class/drm/card0");
+        std::fs::create_dir_all(&card).unwrap();
+        std::os::unix::fs::symlink(&pci_dev, card.join("device")).unwrap();
+        let hwmon = pci_dev.join("hwmon/hwmon0");
+        std::fs::create_dir_all(&hwmon).unwrap();
+        std::fs::write(hwmon.join("name"), "amdgpu\n").unwrap();
+        std::fs::write(hwmon.join("temp1_input"), "38000\n").unwrap();
+        std::fs::write(hwmon.join("temp1_label"), "edge\n").unwrap();
+        std::fs::write(hwmon.join("temp2_input"), "60000\n").unwrap();
+        std::fs::write(hwmon.join("temp2_label"), "junction\n").unwrap();
+        std::fs::write(hwmon.join("pwm1_enable"), "2\n").unwrap();
+        std::fs::write(hwmon.join("pwm1"), "80\n").unwrap();
+        std::fs::write(hwmon.join("pwm1_min"), "0\n").unwrap();
+
+        let mut backend = amd_adl::SysfsBackend::with_root(root);
+        let adapters = backend.adapters().unwrap();
+        let config_path = root.join("config.json");
+        let mut config = Config {
+            temperature_source: TemperatureSource::Gpu,
+            zero_rpm_below_percent: Some(25),
+            ..Config::default()
+        };
+        config.curve[0].speed = 20;
+        let mut s = Snapshot {
+            config,
+            adapters,
+            selected: None,
+            curve_info: None,
+            sample: None,
+            sampled_at_ms: None,
+            manual: false,
+            error: None,
+            ready: true,
+            applied_speed: None,
+            step_down: StepDown::default(),
+        };
+        select(&mut backend, &mut s).unwrap();
+        s.sample = Some(backend.sample().unwrap());
+
+        // 38 °C edge (< 42 - 3 = 39 °C) requests fan stop even though hotspot is 60 °C.
+        handle(Action::Apply, &mut backend, &config_path, &mut s).unwrap();
+        assert!(s.manual);
+        assert_eq!(
+            std::fs::read_to_string(hwmon.join("pwm1")).unwrap().trim(),
+            "0"
+        );
+        assert!(s.curve_info.as_ref().unwrap().zero_rpm_enabled);
+
+        // 40 °C edge (between 39 and 42 °C) retains fan stop despite 0% measured fan speed.
+        std::fs::write(hwmon.join("temp1_input"), "40000\n").unwrap();
+        let sample = backend.sample().unwrap();
+        assert_eq!(sample.speed_percent, Some(0));
+        check_sensor_control(&mut backend, &mut s, &sample);
+        assert_eq!(
+            std::fs::read_to_string(hwmon.join("pwm1")).unwrap().trim(),
+            "0"
+        );
+        assert!(s.curve_info.as_ref().unwrap().zero_rpm_enabled);
+
+        // 42 °C edge (>= cutoff) withdraws fan stop immediately.
+        std::fs::write(hwmon.join("temp1_input"), "42000\n").unwrap();
+        let sample = backend.sample().unwrap();
+        check_sensor_control(&mut backend, &mut s, &sample);
+        assert!(!s.curve_info.as_ref().unwrap().zero_rpm_enabled);
+        assert_ne!(
+            std::fs::read_to_string(hwmon.join("pwm1")).unwrap().trim(),
+            "0"
+        );
+
+        // Cooling to 40 °C (>= 39 °C) does not re-arm fan stop yet.
+        std::fs::write(hwmon.join("temp1_input"), "40000\n").unwrap();
+        let sample = backend.sample().unwrap();
+        check_sensor_control(&mut backend, &mut s, &sample);
+        assert!(!s.curve_info.as_ref().unwrap().zero_rpm_enabled);
+
+        // Cooling to 38 °C (< 39 °C) re-arms fan stop.
+        std::fs::write(hwmon.join("temp1_input"), "38000\n").unwrap();
+        let sample = backend.sample().unwrap();
+        check_sensor_control(&mut backend, &mut s, &sample);
+        assert!(s.curve_info.as_ref().unwrap().zero_rpm_enabled);
+        assert_eq!(
+            std::fs::read_to_string(hwmon.join("pwm1")).unwrap().trim(),
+            "0"
+        );
+
+        // Hotspot reaching thermal safety limit (105 °C) disables Zero RPM and restores automatic.
+        std::fs::write(hwmon.join("temp2_input"), "105000\n").unwrap();
+        let sample = backend.sample().unwrap();
+        assert!(sample.too_hot());
+        assert!(!s.config.zero_rpm_requested(&sample, true).unwrap());
+        s.error = Some(restore_after_failure(
+            &mut backend,
+            &mut s,
+            "The GPU reached the app's temperature safety limit.",
+            None,
+        ));
+        assert!(!s.manual);
+        assert_eq!(
+            std::fs::read_to_string(hwmon.join("pwm1_enable"))
+                .unwrap()
+                .trim(),
+            "2"
+        );
+    }
+
+    #[test]
+    fn sysfs_worker_recovers_and_reports_clear_error_when_zero_rpm_rejected_or_support_lost() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let pci_dev = root.join("devices/pci0000:00/0000:03:00.0");
+        std::fs::create_dir_all(&pci_dev).unwrap();
+        std::fs::write(pci_dev.join("vendor"), "0x1002\n").unwrap();
+        std::fs::write(
+            pci_dev.join("uevent"),
+            "DRIVER=amdgpu\nPCI_SLOT_NAME=0000:03:00.0\n",
+        )
+        .unwrap();
+        let card = root.join("class/drm/card0");
+        std::fs::create_dir_all(&card).unwrap();
+        std::os::unix::fs::symlink(&pci_dev, card.join("device")).unwrap();
+        let hwmon = pci_dev.join("hwmon/hwmon0");
+        std::fs::create_dir_all(&hwmon).unwrap();
+        std::fs::write(hwmon.join("name"), "amdgpu\n").unwrap();
+        std::fs::write(hwmon.join("temp1_input"), "38000\n").unwrap();
+        std::fs::write(hwmon.join("pwm1_enable"), "2\n").unwrap();
+        std::fs::write(hwmon.join("pwm1"), "80\n").unwrap();
+        std::fs::write(hwmon.join("pwm1_min"), "0\n").unwrap();
+
+        let mut backend = amd_adl::SysfsBackend::with_root(root);
+        let adapters = backend.adapters().unwrap();
+        let config_path = root.join("config.json");
+        let mut config = Config {
+            temperature_source: TemperatureSource::Gpu,
+            zero_rpm_below_percent: Some(25),
+            ..Config::default()
+        };
+        config.curve[0].speed = 20;
+        let mut s = Snapshot {
+            config,
+            adapters,
+            selected: None,
+            curve_info: None,
+            sample: None,
+            sampled_at_ms: None,
+            manual: false,
+            error: None,
+            ready: true,
+            applied_speed: None,
+            step_down: StepDown::default(),
+        };
+        select(&mut backend, &mut s).unwrap();
+        s.sample = Some(backend.sample().unwrap());
+
+        // Apply succeeds with Zero RPM active.
+        handle(Action::Apply, &mut backend, &config_path, &mut s).unwrap();
+        assert!(s.manual);
+        assert_eq!(
+            std::fs::read_to_string(hwmon.join("pwm1")).unwrap().trim(),
+            "0"
+        );
+
+        // Driver loses Zero RPM support (pwm1_min > 0) while custom control is active.
+        std::fs::write(hwmon.join("pwm1_min"), "50\n").unwrap();
+        let sample = backend.sample().unwrap();
+        check_sensor_control(&mut backend, &mut s, &sample);
+        assert!(!s.manual);
+        assert_eq!(
+            std::fs::read_to_string(hwmon.join("pwm1_enable"))
+                .unwrap()
+                .trim(),
+            "2"
+        );
+        assert!(!s.curve_info.as_ref().unwrap().zero_rpm_supported);
+        let err = s.error.as_deref().unwrap();
+        assert!(
+            err.contains("Allow fans to stop"),
+            "unexpected error: {err}"
+        );
+        assert!(
+            !err.contains("Driver / firmware sensor"),
+            "host-PWM error should not suggest Firmware sensor: {err}"
+        );
+        assert!(
+            err.contains("\n\nTechnical details: "),
+            "expected technical details: {err}"
+        );
+    }
+
+    #[test]
+    fn sysfs_worker_reports_actionable_udev_message_on_readonly_and_permission_denied() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let pci_dev = root.join("devices/pci0000:00/0000:03:00.0");
+        std::fs::create_dir_all(&pci_dev).unwrap();
+        std::fs::write(pci_dev.join("vendor"), "0x1002\n").unwrap();
+        std::fs::write(
+            pci_dev.join("uevent"),
+            "DRIVER=amdgpu\nPCI_SLOT_NAME=0000:03:00.0\n",
+        )
+        .unwrap();
+        let card = root.join("class/drm/card0");
+        std::fs::create_dir_all(&card).unwrap();
+        std::os::unix::fs::symlink(&pci_dev, card.join("device")).unwrap();
+        let hwmon = pci_dev.join("hwmon/hwmon0");
+        std::fs::create_dir_all(&hwmon).unwrap();
+        std::fs::write(hwmon.join("name"), "amdgpu\n").unwrap();
+        std::fs::write(hwmon.join("temp1_input"), "50000\n").unwrap();
+        std::fs::write(hwmon.join("pwm1_enable"), "2\n").unwrap();
+        std::fs::write(hwmon.join("pwm1"), "80\n").unwrap();
+
+        let mut backend = amd_adl::SysfsBackend::with_root(root);
+        let adapters = backend.adapters().unwrap();
+        let config_path = root.join("config.json");
+        let mut s = Snapshot {
+            config: Config::default(),
+            adapters,
+            selected: None,
+            curve_info: None,
+            sample: None,
+            sampled_at_ms: None,
+            manual: false,
+            error: None,
+            ready: true,
+            applied_speed: None,
+            step_down: StepDown::default(),
+        };
+
+        // Case 1: Adapter opened read-only (pwm1 not writable).
+        std::fs::set_permissions(hwmon.join("pwm1"), std::fs::Permissions::from_mode(0o444))
+            .unwrap();
+        select(&mut backend, &mut s).unwrap();
+        s.sample = Some(backend.sample().unwrap());
+        let ro_err = handle(Action::Apply, &mut backend, &config_path, &mut s).unwrap_err();
+        let ro_msg = ro_err.to_string();
+        assert!(ro_msg.contains("read-only"), "expected read-only: {ro_msg}");
+        assert!(ro_msg.contains("udev"), "expected udev guidance: {ro_msg}");
+        assert!(ro_msg.contains("hwmon"), "expected hwmon mention: {ro_msg}");
+
+        // Case 2: Permissions lost before write -> EACCES/PermissionDenied tucked under Technical details.
+        std::fs::set_permissions(hwmon.join("pwm1"), std::fs::Permissions::from_mode(0o644))
+            .unwrap();
+        select(&mut backend, &mut s).unwrap();
+        handle(Action::Apply, &mut backend, &config_path, &mut s).unwrap();
+        assert!(s.manual);
+
+        std::fs::set_permissions(hwmon.join("pwm1"), std::fs::Permissions::from_mode(0o444))
+            .unwrap();
+        std::fs::set_permissions(
+            hwmon.join("pwm1_enable"),
+            std::fs::Permissions::from_mode(0o444),
+        )
+        .unwrap();
+        std::fs::write(hwmon.join("temp1_input"), "65000\n").unwrap();
+        let sample = backend.sample().unwrap();
+        check_sensor_control(&mut backend, &mut s, &sample);
+
+        std::fs::set_permissions(hwmon.join("pwm1"), std::fs::Permissions::from_mode(0o644))
+            .unwrap();
+        std::fs::set_permissions(
+            hwmon.join("pwm1_enable"),
+            std::fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+
+        let err = s.error.as_deref().unwrap();
+        let (summary, details) = err
+            .split_once("\n\nTechnical details: ")
+            .expect("expected Technical details section");
+        assert!(
+            summary.contains("read-only") && summary.contains("udev") && summary.contains("hwmon"),
+            "expected actionable summary: {summary}"
+        );
+        assert!(
+            !summary.contains("os error"),
+            "raw OS error must not leak into summary: {summary}"
+        );
+        assert!(
+            details.contains("Permission denied") || details.contains("os error"),
+            "expected raw OS error in details: {details}"
         );
     }
 }

@@ -153,7 +153,7 @@ function zeroFeedback() {
   const active = !!state?.curve_info?.zero_rpm_enabled;
   const stop = zeroStop();
   el('zero-feedback').textContent = !state?.ready ? 'Waiting for GPU capabilities.'
-    : !available ? 'Native Zero RPM is unavailable with this GPU/driver.'
+    : !available ? 'Zero RPM is unavailable with this GPU/driver.'
     : draft?.zero_rpm_below_percent == null ? 'Disabled for custom control.'
     : stop === null ? 'Set a curve point below the threshold. The cutoff must be at or below 60 °C.'
     : `Fans may stop below ${stop} °C; re-arms below ${stop - 3} °C using ${draft?.temperature_source === 'gpu' ? 'GPU temperature' : draft?.temperature_source === 'hotspot' ? 'hotspot temperature' : 'the hotter sensor'}.${state?.manual ? active ? ' Stop requested.' : ' Stop not requested.' : ''}`;
@@ -225,7 +225,7 @@ function controls() {
     ? state.config.custom_control_enabled
       ? 'Your saved curve controls the fans and will resume when the app starts. Turn off to restore driver defaults.'
       : 'Custom control may still be active. Use driver defaults to retry restoration.'
-    : state?.curve_info && !canWrite ? 'Fan control is read-only without hardware write permissions. Telemetry and backup export remain usable.'
+    : state?.curve_info && !canWrite ? 'Fan control is read-only without hwmon PWM write permissions (monitoring and backup export still work). Grant access with the 60-amd-fan-control.rules udev rule.'
     : !firmwareAllowed ? 'Driver / firmware sensor is unavailable with this backend. Choose GPU temperature or Junction / hotspot.'
     : state?.sample && !sensorAvailable ? 'Selected temperature sensor unavailable. Choose another curve temperature.'
     : dirty ? 'Save your changes before turning on. Turn off restores driver defaults.'
@@ -276,7 +276,7 @@ function update(s: Status) {
   if (!dirty && !pending) el('feedback').textContent = s.manual
     ? 'Curve verified in the driver. Turn custom control off before editing.'
     : s.curve_info && !hardwareWritable()
-    ? 'Read-only monitoring mode: fan control writes are not permitted. Telemetry and backup export remain available.'
+    ? 'Read-only monitoring mode: fan control writes are not permitted. Install the 60-amd-fan-control.rules udev rule for hwmon PWM access and reload udev rules.'
     : s.curve_info?.supported
     ? 'Custom control is off. Your saved curve is ready to use.'
     : 'Fan curve control is unavailable with this driver.';
