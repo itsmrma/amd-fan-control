@@ -177,17 +177,9 @@ impl SysfsBackend {
             canonical.hash(&mut hasher);
             std::env::temp_dir().join(format!("amd-fan-control-root-{:016x}", hasher.finish()))
         };
-        let sanitized: String = adapter_id
-            .chars()
-            .map(|c| {
-                if c.is_ascii_alphanumeric() || c == '.' || c == '-' {
-                    c
-                } else {
-                    '_'
-                }
-            })
-            .collect();
-        dir.join(format!("{sanitized}.lock"))
+        let mut hasher = DefaultHasher::new();
+        adapter_id.hash(&mut hasher);
+        dir.join(format!("gpu-{:016x}.lock", hasher.finish()))
     }
 
     fn acquire_lock(&mut self) -> Result<()> {
