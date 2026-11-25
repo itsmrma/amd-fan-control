@@ -78,7 +78,7 @@ pub fn zero_rpm_stop_temperature(points: &[Point], below_percent: i32) -> Result
 
 /// Host-PWM controller for future sysfs/legacy backends. Never used for native OD8.
 /// Rise immediately; lower only after the entire delay below the temperature band.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct StepDown {
     held_temperature: Option<f64>,
     cooling_since: Option<Instant>,

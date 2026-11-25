@@ -4,8 +4,9 @@ use fan_core::{
     hardware::{Adapter, CurveInfo, GpuBackend, Sample},
 };
 use std::{
-    collections::HashSet,
+    collections::{hash_map::DefaultHasher, HashSet},
     fs,
+    hash::{Hash, Hasher},
     marker::PhantomData,
     path::{Path, PathBuf},
     rc::Rc,
@@ -23,9 +24,13 @@ struct DiscoveredAdapter {
     device_path: PathBuf,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct SelectedAdapter {
+    id: String,
     hwmon_path: PathBuf,
+    owns_manual: bool,
+    expected_pwm: Option<i32>,
+    lock_file: Option<fs::File>,
 }
 
 fn read_trimmed(path: &Path) -> Option<String> {
@@ -145,6 +150,103 @@ impl SysfsBackend {
             .context("Select a GPU before accessing hardware")
     }
 
+    fn lock_path(&self, adapter_id: &str) -> PathBuf {
+        let dir = if self.root == Path::new("/sys") {
+            std::env::var_os("XDG_RUNTIME_DIR")
+                .map(PathBuf::from)
+                .unwrap_or_else(std::env::temp_dir)
+                .join("amd-fan-control")
+        } else {
+            let canonical = fs::canonicalize(&self.root).unwrap_or_else(|_| self.root.clone());
+            let mut hasher = DefaultHasher::new();
+            canonical.hash(&mut hasher);
+            std::env::temp_dir().join(format!("amd-fan-control-root-{:016x}", hasher.finish()))
+        };
+        let sanitized: String = adapter_id
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '.' || c == '-' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        dir.join(format!("{sanitized}.lock"))
+    }
+
+    fn acquire_lock(&mut self) -> Result<()> {
+        let id = self
+            .selected
+            .as_ref()
+            .context("Select a GPU before accessing hardware")?
+            .id
+            .clone();
+        if self
+            .selected
+            .as_ref()
+            .is_some_and(|s| s.lock_file.is_some())
+        {
+            return Ok(());
+        }
+        let path = self.lock_path(&id);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("Creating lock directory {}", parent.display()))?;
+        }
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+            .with_context(|| format!("Opening lock file {}", path.display()))?;
+        match file.try_lock() {
+            Ok(()) => {
+                if let Some(selected) = &mut self.selected {
+                    selected.lock_file = Some(file);
+                }
+                Ok(())
+            }
+            Err(fs::TryLockError::WouldBlock) => {
+                bail!("Another amd-fan-control session is already controlling GPU {id}")
+            }
+            Err(fs::TryLockError::Error(e)) => {
+                Err(e).with_context(|| format!("Acquiring advisory lock {}", path.display()))
+            }
+        }
+    }
+
+    fn release_lock(&mut self) {
+        if let Some(selected) = &mut self.selected {
+            if let Some(file) = selected.lock_file.take() {
+                let _ = file.unlock();
+            }
+        }
+    }
+
+    fn verify_owned_state(&self) -> Result<()> {
+        let Some(selected) = &self.selected else {
+            return Ok(());
+        };
+        if !selected.owns_manual {
+            return Ok(());
+        }
+        let actual_enable = read_i32(&selected.hwmon_path.join("pwm1_enable"));
+        let actual_pwm = read_i32(&selected.hwmon_path.join("pwm1"));
+        if actual_enable != Some(1)
+            || selected
+                .expected_pwm
+                .is_some_and(|expected| actual_pwm != Some(expected))
+        {
+            bail!(
+                "Fan settings changed outside this app (expected pwm1_enable=1, pwm1={:?}, found pwm1_enable={actual_enable:?}, pwm1={actual_pwm:?})",
+                selected.expected_pwm
+            );
+        }
+        Ok(())
+    }
+
     fn discover(&self) -> Result<Vec<DiscoveredAdapter>> {
         let drm_dir = self.root.join("class/drm");
         let entries = match fs::read_dir(&drm_dir) {
@@ -217,11 +319,19 @@ impl GpuBackend for SysfsBackend {
             .find(|d| d.adapter.id == adapter.id)
             .with_context(|| format!("GPU {} not found in sysfs", adapter.id))?;
         let hwmon_path = find_hwmon_dir(&found.device_path)?;
-        self.selected = Some(SelectedAdapter { hwmon_path });
+        self.release_lock();
+        self.selected = Some(SelectedAdapter {
+            id: found.adapter.id,
+            hwmon_path,
+            owns_manual: false,
+            expected_pwm: None,
+            lock_file: None,
+        });
         Ok(())
     }
 
     fn curve_info(&mut self) -> Result<CurveInfo> {
+        self.verify_owned_state()?;
         let hwmon = self.hwmon_path()?;
         let pwm1_enable = hwmon.join("pwm1_enable");
         let pwm1 = hwmon.join("pwm1");
@@ -282,8 +392,110 @@ impl GpuBackend for SysfsBackend {
         bail!("Native firmware fan curves are not supported on Linux sysfs")
     }
 
+    fn apply_speed(&mut self, percent: i32, zero_rpm: bool) -> Result<()> {
+        if zero_rpm {
+            return self.set_pwm(0);
+        }
+        if !(20..=100).contains(&percent) {
+            bail!("Fan speed must be 20–100%");
+        }
+        self.set_pwm(percent as u8)
+    }
+
+    fn set_pwm(&mut self, percent: u8) -> Result<()> {
+        if percent > 100 {
+            bail!("PWM percentage must be 0–100%");
+        }
+        let hwmon = self.hwmon_path()?.to_path_buf();
+        let pwm1_enable = hwmon.join("pwm1_enable");
+        let pwm1 = hwmon.join("pwm1");
+        if !pwm1_enable.exists() || !pwm1.exists() {
+            bail!("Host PWM control is not supported by this GPU/driver");
+        }
+        if percent == 0 && read_i32(&hwmon.join("pwm1_min")).is_some_and(|min| min > 0) {
+            bail!("This GPU/driver does not support Zero RPM (pwm1_min > 0)");
+        }
+        self.verify_owned_state()?;
+        let had_lock = self
+            .selected
+            .as_ref()
+            .is_some_and(|s| s.lock_file.is_some());
+        self.acquire_lock()?;
+        let target_pwm = ((u32::from(percent) * 255 + 50) / 100) as i32;
+        if let Err(e) = fs::write(&pwm1_enable, "1")
+            .with_context(|| format!("Writing manual mode to {}", pwm1_enable.display()))
+        {
+            if !had_lock {
+                self.release_lock();
+            }
+            return Err(e);
+        }
+        if let Some(selected) = &mut self.selected {
+            selected.owns_manual = true;
+            selected.expected_pwm = None;
+        }
+        if read_i32(&pwm1_enable) != Some(1) {
+            let _ = self.restore_automatic();
+            bail!("Driver did not retain manual PWM mode (pwm1_enable=1)");
+        }
+        let write_and_verify = (|| -> Result<()> {
+            fs::write(&pwm1, target_pwm.to_string())
+                .with_context(|| format!("Writing PWM duty to {}", pwm1.display()))?;
+            if read_i32(&pwm1_enable) != Some(1) || read_i32(&pwm1) != Some(target_pwm) {
+                bail!(
+                    "Driver did not retain requested PWM duty (expected pwm1_enable=1, pwm1={target_pwm})"
+                );
+            }
+            Ok(())
+        })();
+        if let Err(err) = write_and_verify {
+            let _ = self.restore_automatic();
+            return Err(err);
+        }
+        if let Some(selected) = &mut self.selected {
+            selected.owns_manual = true;
+            selected.expected_pwm = Some(target_pwm);
+        }
+        Ok(())
+    }
+
     fn restore_automatic(&mut self) -> Result<()> {
-        bail!("Automatic fan restore is not implemented yet")
+        let hwmon = self.hwmon_path()?.to_path_buf();
+        let had_lock = self
+            .selected
+            .as_ref()
+            .is_some_and(|s| s.lock_file.is_some());
+        self.acquire_lock()?;
+        let pwm1_enable = hwmon.join("pwm1_enable");
+        let res = (|| -> Result<()> {
+            fs::write(&pwm1_enable, "2").with_context(|| {
+                format!("Restoring automatic mode in {}", pwm1_enable.display())
+            })?;
+            if read_i32(&pwm1_enable) != Some(2) {
+                bail!("Driver did not retain automatic PWM mode (pwm1_enable=2)");
+            }
+            Ok(())
+        })();
+        if let Err(e) = res {
+            if !had_lock {
+                self.release_lock();
+            }
+            return Err(e);
+        }
+        if let Some(selected) = &mut self.selected {
+            selected.owns_manual = false;
+            selected.expected_pwm = None;
+        }
+        self.release_lock();
+        Ok(())
+    }
+}
+
+impl Drop for SysfsBackend {
+    fn drop(&mut self) {
+        if self.selected.as_ref().is_some_and(|s| s.owns_manual) {
+            let _ = self.restore_automatic();
+        }
     }
 }
 
@@ -589,5 +801,225 @@ mod tests {
         assert!(!no_pwm.host_pwm_supported);
         assert!(!no_pwm.writable);
         assert!(!no_pwm.zero_rpm_supported);
+    }
+
+    #[test]
+    fn applies_host_pwm_verifies_readback_and_restores_automatic() {
+        let dir = tempfile::tempdir().unwrap();
+        let pci_dev = create_fake_card(
+            dir.path(),
+            FakeCard {
+                card_name: "card0",
+                pci_slot: "0000:03:00.0",
+                vendor: "0x1002",
+                driver: "amdgpu",
+                product_name: Some("AMD Radeon RX 7800 XT"),
+                device_id: None,
+            },
+        );
+        let hwmon = pci_dev.join("hwmon/hwmon0");
+        fs::create_dir_all(&hwmon).unwrap();
+        fs::write(hwmon.join("name"), "amdgpu\n").unwrap();
+        fs::write(hwmon.join("temp1_input"), "45000\n").unwrap();
+        fs::write(hwmon.join("pwm1_enable"), "2\n").unwrap();
+        fs::write(hwmon.join("pwm1"), "80\n").unwrap();
+        fs::write(hwmon.join("pwm1_min"), "0\n").unwrap();
+
+        let mut backend = SysfsBackend::with_root(dir.path());
+        let adapters = backend.adapters().unwrap();
+        backend.select(&adapters[0]).unwrap();
+
+        backend.apply_speed(50, false).unwrap();
+        assert_eq!(read_i32(&hwmon.join("pwm1_enable")), Some(1));
+        assert_eq!(read_i32(&hwmon.join("pwm1")), Some(128));
+        assert!(!backend.curve_info().unwrap().zero_rpm_enabled);
+
+        backend.apply_speed(40, true).unwrap();
+        assert_eq!(read_i32(&hwmon.join("pwm1_enable")), Some(1));
+        assert_eq!(read_i32(&hwmon.join("pwm1")), Some(0));
+        assert!(backend.curve_info().unwrap().zero_rpm_enabled);
+
+        backend.restore_automatic().unwrap();
+        assert_eq!(read_i32(&hwmon.join("pwm1_enable")), Some(2));
+        assert!(!backend.curve_info().unwrap().zero_rpm_enabled);
+    }
+
+    #[test]
+    fn restores_automatic_on_partial_write_failure_and_rejects_unwritable_nodes() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let pci_dev = create_fake_card(
+            dir.path(),
+            FakeCard {
+                card_name: "card0",
+                pci_slot: "0000:03:00.0",
+                vendor: "0x1002",
+                driver: "amdgpu",
+                product_name: None,
+                device_id: None,
+            },
+        );
+        let hwmon = pci_dev.join("hwmon/hwmon0");
+        fs::create_dir_all(&hwmon).unwrap();
+        fs::write(hwmon.join("name"), "amdgpu\n").unwrap();
+        fs::write(hwmon.join("temp1_input"), "45000\n").unwrap();
+        fs::write(hwmon.join("pwm1_enable"), "2\n").unwrap();
+        fs::write(hwmon.join("pwm1"), "80\n").unwrap();
+        fs::write(hwmon.join("pwm1_min"), "0\n").unwrap();
+
+        let mut backend = SysfsBackend::with_root(dir.path());
+        let adapters = backend.adapters().unwrap();
+        backend.select(&adapters[0]).unwrap();
+
+        // Partial write failure: pwm1_enable is writable (becomes 1), pwm1 is read-only -> fails and restores pwm1_enable=2.
+        fs::set_permissions(hwmon.join("pwm1"), fs::Permissions::from_mode(0o444)).unwrap();
+        assert!(backend.apply_speed(60, false).is_err());
+        assert_eq!(read_i32(&hwmon.join("pwm1_enable")), Some(2));
+        fs::set_permissions(hwmon.join("pwm1"), fs::Permissions::from_mode(0o644)).unwrap();
+
+        // Unwritable pwm1_enable -> fails cleanly.
+        fs::set_permissions(hwmon.join("pwm1_enable"), fs::Permissions::from_mode(0o444)).unwrap();
+        assert!(backend.apply_speed(60, false).is_err());
+        fs::set_permissions(hwmon.join("pwm1_enable"), fs::Permissions::from_mode(0o644)).unwrap();
+
+        // pwm1_min > 0 rejects Zero RPM without switching pwm1_enable.
+        fs::write(hwmon.join("pwm1_min"), "50\n").unwrap();
+        assert!(backend.apply_speed(30, true).is_err());
+        assert_eq!(read_i32(&hwmon.join("pwm1_enable")), Some(2));
+    }
+
+    #[test]
+    fn detects_external_modification_of_pwm1_enable_or_pwm1() {
+        let dir = tempfile::tempdir().unwrap();
+        let pci_dev = create_fake_card(
+            dir.path(),
+            FakeCard {
+                card_name: "card0",
+                pci_slot: "0000:03:00.0",
+                vendor: "0x1002",
+                driver: "amdgpu",
+                product_name: None,
+                device_id: None,
+            },
+        );
+        let hwmon = pci_dev.join("hwmon/hwmon0");
+        fs::create_dir_all(&hwmon).unwrap();
+        fs::write(hwmon.join("name"), "amdgpu\n").unwrap();
+        fs::write(hwmon.join("temp1_input"), "45000\n").unwrap();
+        fs::write(hwmon.join("pwm1_enable"), "2\n").unwrap();
+        fs::write(hwmon.join("pwm1"), "80\n").unwrap();
+
+        let mut backend = SysfsBackend::with_root(dir.path());
+        let adapters = backend.adapters().unwrap();
+        backend.select(&adapters[0]).unwrap();
+
+        // External change to pwm1
+        backend.apply_speed(50, false).unwrap();
+        fs::write(hwmon.join("pwm1"), "200\n").unwrap();
+        assert!(backend.curve_info().is_err());
+        assert!(backend.apply_speed(60, false).is_err());
+        backend.restore_automatic().unwrap();
+
+        // External change to pwm1_enable
+        backend.apply_speed(50, false).unwrap();
+        fs::write(hwmon.join("pwm1_enable"), "2\n").unwrap();
+        assert!(backend.curve_info().is_err());
+        assert!(backend.apply_speed(60, false).is_err());
+        backend.restore_automatic().unwrap();
+    }
+
+    #[test]
+    fn drop_restores_automatic_only_when_session_owns_manual_control() {
+        let dir = tempfile::tempdir().unwrap();
+        let pci_dev = create_fake_card(
+            dir.path(),
+            FakeCard {
+                card_name: "card0",
+                pci_slot: "0000:03:00.0",
+                vendor: "0x1002",
+                driver: "amdgpu",
+                product_name: None,
+                device_id: None,
+            },
+        );
+        let hwmon = pci_dev.join("hwmon/hwmon0");
+        fs::create_dir_all(&hwmon).unwrap();
+        fs::write(hwmon.join("name"), "amdgpu\n").unwrap();
+        fs::write(hwmon.join("temp1_input"), "45000\n").unwrap();
+        fs::write(hwmon.join("pwm1_enable"), "1\n").unwrap();
+        fs::write(hwmon.join("pwm1"), "128\n").unwrap();
+
+        // Case A: read-only monitoring does NOT own manual control -> Drop must not touch pwm1_enable.
+        {
+            let mut backend = SysfsBackend::with_root(dir.path());
+            let adapters = backend.adapters().unwrap();
+            backend.select(&adapters[0]).unwrap();
+            let _ = backend.sample().unwrap();
+        }
+        assert_eq!(read_i32(&hwmon.join("pwm1_enable")), Some(1));
+
+        // Case B: session owns manual control -> Drop restores pwm1_enable=2.
+        fs::write(hwmon.join("pwm1_enable"), "2\n").unwrap();
+        {
+            let mut backend = SysfsBackend::with_root(dir.path());
+            let adapters = backend.adapters().unwrap();
+            backend.select(&adapters[0]).unwrap();
+            backend.apply_speed(60, false).unwrap();
+            assert_eq!(read_i32(&hwmon.join("pwm1_enable")), Some(1));
+        }
+        assert_eq!(read_i32(&hwmon.join("pwm1_enable")), Some(2));
+    }
+
+    #[test]
+    fn flock_prevents_concurrent_manual_control_on_same_gpu_and_allows_after_restore() {
+        let dir = tempfile::tempdir().unwrap();
+        let pci_dev = create_fake_card(
+            dir.path(),
+            FakeCard {
+                card_name: "card0",
+                pci_slot: "0000:03:00.0",
+                vendor: "0x1002",
+                driver: "amdgpu",
+                product_name: None,
+                device_id: None,
+            },
+        );
+        let hwmon = pci_dev.join("hwmon/hwmon0");
+        fs::create_dir_all(&hwmon).unwrap();
+        fs::write(hwmon.join("name"), "amdgpu\n").unwrap();
+        fs::write(hwmon.join("temp1_input"), "45000\n").unwrap();
+        fs::write(hwmon.join("pwm1_enable"), "2\n").unwrap();
+        fs::write(hwmon.join("pwm1"), "80\n").unwrap();
+
+        let mut backend1 = SysfsBackend::with_root(dir.path());
+        let mut backend2 = SysfsBackend::with_root(dir.path());
+        let adapters = backend1.adapters().unwrap();
+        backend1.select(&adapters[0]).unwrap();
+        backend2.select(&adapters[0]).unwrap();
+
+        // Both can read telemetry simultaneously.
+        assert!(backend1.sample().is_ok());
+        assert!(backend2.sample().is_ok());
+
+        // backend1 acquires manual control lock.
+        backend1.apply_speed(50, false).unwrap();
+        assert_eq!(read_i32(&hwmon.join("pwm1")), Some(128));
+
+        // backend2 cannot write or reset while backend1 holds the lock.
+        let err = backend2.apply_speed(60, false).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("Another"),
+            "unexpected lock error: {err:#}"
+        );
+        assert_eq!(read_i32(&hwmon.join("pwm1")), Some(128));
+        assert!(backend2.restore_automatic().is_err());
+        assert_eq!(read_i32(&hwmon.join("pwm1_enable")), Some(1));
+
+        // After backend1 restores automatic, backend2 can take control.
+        backend1.restore_automatic().unwrap();
+        backend2.apply_speed(60, false).unwrap();
+        assert_eq!(read_i32(&hwmon.join("pwm1")), Some(153));
+        backend2.restore_automatic().unwrap();
     }
 }

@@ -1,7 +1,7 @@
 use anyhow::{bail, Context, Result};
 use fan_core::{
     config::{Config, TemperatureSource},
-    curve::{interpolate, native_points},
+    curve::{interpolate, native_points, StepDown},
     hardware::{speed_hold_points, Adapter, CurveInfo, GpuBackend, Sample},
 };
 use serde::Serialize;
@@ -28,6 +28,8 @@ pub struct Snapshot {
     pub ready: bool,
     #[serde(skip)]
     applied_speed: Option<i32>,
+    #[serde(skip)]
+    step_down: StepDown,
 }
 
 pub enum Action {
@@ -66,6 +68,7 @@ impl Worker {
             error,
             ready: false,
             applied_speed: None,
+            step_down: StepDown::default(),
         }));
         let (sender, receiver) = mpsc::sync_channel(8);
         let shared = snapshot.clone();
@@ -151,6 +154,7 @@ fn restore(backend: &mut dyn GpuBackend, s: &mut Snapshot) -> Result<()> {
     backend.restore_automatic()?;
     s.manual = false;
     s.applied_speed = None;
+    s.step_down = StepDown::default();
     s.curve_info = Some(backend.curve_info()?);
     Ok(())
 }
@@ -208,15 +212,30 @@ fn update_zero_rpm(backend: &mut dyn GpuBackend, s: &mut Snapshot, sample: &Samp
     Ok(())
 }
 
+const HOST_PWM_STEPDOWN_BAND_C: f64 = 3.0;
+const HOST_PWM_STEPDOWN_DELAY: Duration = Duration::from_secs(6);
+
 fn requested_speed(s: &Snapshot, sample: &Sample) -> Result<i32> {
     let temperature = s.config.temperature_source.temperature(sample)?;
     Ok(interpolate(&s.config.curve, f64::from(temperature)).ceil() as i32)
 }
 
-fn update_sensor_control(
+fn requested_host_pwm_speed(s: &mut Snapshot, sample: &Sample, now: Instant) -> Result<i32> {
+    let temperature = s.config.temperature_source.temperature(sample)?;
+    let held = s.step_down.temperature(
+        f64::from(temperature),
+        HOST_PWM_STEPDOWN_BAND_C,
+        HOST_PWM_STEPDOWN_DELAY,
+        now,
+    );
+    Ok(interpolate(&s.config.curve, held).ceil() as i32)
+}
+
+fn update_sensor_control_at(
     backend: &mut dyn GpuBackend,
     s: &mut Snapshot,
     sample: &Sample,
+    now: Instant,
 ) -> Result<()> {
     let expected = s
         .curve_info
@@ -228,11 +247,11 @@ fn update_sensor_control(
     {
         bail!("Fan settings changed outside this app");
     }
-    let speed = requested_speed(s, sample)?;
     let zero_rpm = s
         .config
         .zero_rpm_requested(sample, actual.zero_rpm_enabled)?;
     if actual.native_curve_supported {
+        let speed = requested_speed(s, sample)?;
         let points = speed_hold_points(&actual, speed)?;
         if actual.current != points || actual.zero_rpm_enabled != zero_rpm {
             backend.apply_speed(speed, zero_rpm)?;
@@ -243,6 +262,7 @@ fn update_sensor_control(
             s.curve_info = Some(info);
         }
     } else if actual.host_pwm_supported {
+        let speed = requested_host_pwm_speed(s, sample, now)?;
         if s.applied_speed != Some(speed) || actual.zero_rpm_enabled != zero_rpm {
             backend.apply_speed(speed, zero_rpm)?;
             let info = backend.curve_info()?;
@@ -258,8 +278,17 @@ fn update_sensor_control(
     Ok(())
 }
 
+#[cfg(test)]
+fn update_sensor_control(
+    backend: &mut dyn GpuBackend,
+    s: &mut Snapshot,
+    sample: &Sample,
+) -> Result<()> {
+    update_sensor_control_at(backend, s, sample, Instant::now())
+}
+
 fn check_sensor_control(backend: &mut dyn GpuBackend, s: &mut Snapshot, sample: &Sample) {
-    if let Err(e) = update_sensor_control(backend, s, sample) {
+    if let Err(e) = update_sensor_control_at(backend, s, sample, Instant::now()) {
         s.error = Some(restore_after_failure(
             backend, s,
             "Sensor-based fan control stopped. Check the selected sensor, or select Driver / firmware sensor to use the previous control mode.",
@@ -385,11 +414,13 @@ fn handle(
                     if !current_info.host_pwm_supported {
                         bail!("Sensor-based fan control is not supported by this GPU/driver");
                     }
-                    let speed = requested_speed(s, &sample)?;
-                    let expected = if current_info.native_curve_supported {
-                        Some(speed_hold_points(&current_info, speed)?)
+                    s.step_down = StepDown::default();
+                    let (speed, expected) = if current_info.native_curve_supported {
+                        let speed = requested_speed(s, &sample)?;
+                        (speed, Some(speed_hold_points(&current_info, speed)?))
                     } else {
-                        None
+                        let speed = requested_host_pwm_speed(s, &sample, Instant::now())?;
+                        (speed, None)
                     };
                     (Some(speed), expected)
                 };
@@ -664,6 +695,7 @@ mod tests {
             error: None,
             ready: true,
             applied_speed: None,
+            step_down: StepDown::default(),
         }
     }
     fn test_request(action: Action, gpu: &mut dyn GpuBackend, s: &mut Snapshot) -> Result<bool> {
@@ -1294,5 +1326,159 @@ mod tests {
         assert!(!s.manual);
         assert!(s.error.as_ref().unwrap().contains("read-only"));
         assert!(gpu.speed_writes.is_empty());
+    }
+
+    #[test]
+    fn host_pwm_uses_stepdown_hysteresis_rising_immediately_and_cooling_after_delay() {
+        let mut gpu = HostPwmGpu::new(true);
+        gpu.sample.edge_c = Some(70);
+        let mut s = host_pwm_snapshot(&gpu, TemperatureSource::Gpu);
+
+        test_request(Action::Apply, &mut gpu, &mut s).unwrap();
+        let speed_70 = requested_speed(&s, &gpu.sample).unwrap();
+        assert_eq!(gpu.speed_writes, vec![(speed_70, false)]);
+
+        let t0 = Instant::now();
+        let cooler = Sample {
+            edge_c: Some(55),
+            ..gpu.sample.clone()
+        };
+        let speed_55 = requested_speed(&s, &cooler).unwrap();
+        assert!(speed_55 < speed_70);
+
+        // Within the 6s hold delay, cooling does not step down yet.
+        update_sensor_control_at(&mut gpu, &mut s, &cooler, t0).unwrap();
+        update_sensor_control_at(&mut gpu, &mut s, &cooler, t0 + Duration::from_secs(5)).unwrap();
+        assert_eq!(gpu.speed_writes, vec![(speed_70, false)]);
+
+        // After 6s continuously below the 3 °C band, speed steps down.
+        update_sensor_control_at(&mut gpu, &mut s, &cooler, t0 + Duration::from_secs(6)).unwrap();
+        assert_eq!(gpu.speed_writes, vec![(speed_70, false), (speed_55, false)]);
+
+        // Temperature rise increases fan speed immediately.
+        let warmer = Sample {
+            edge_c: Some(75),
+            ..gpu.sample.clone()
+        };
+        let speed_75 = requested_speed(&s, &warmer).unwrap();
+        update_sensor_control_at(&mut gpu, &mut s, &warmer, t0 + Duration::from_secs(7)).unwrap();
+        assert_eq!(
+            gpu.speed_writes,
+            vec![(speed_70, false), (speed_55, false), (speed_75, false)]
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn sysfs_worker_applies_curve_restores_on_tampering_and_resumes_exact_pci_id() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let pci_dev = root.join("devices/pci0000:00/0000:03:00.0");
+        std::fs::create_dir_all(&pci_dev).unwrap();
+        std::fs::write(pci_dev.join("vendor"), "0x1002\n").unwrap();
+        std::fs::write(
+            pci_dev.join("uevent"),
+            "DRIVER=amdgpu\nPCI_SLOT_NAME=0000:03:00.0\n",
+        )
+        .unwrap();
+        let driver_dir = root.join("bus/pci/drivers/amdgpu");
+        std::fs::create_dir_all(&driver_dir).unwrap();
+        symlink(&driver_dir, pci_dev.join("driver")).unwrap();
+        let card_dir = root.join("class/drm/card0");
+        std::fs::create_dir_all(&card_dir).unwrap();
+        symlink(&pci_dev, card_dir.join("device")).unwrap();
+
+        let hwmon = pci_dev.join("hwmon/hwmon0");
+        std::fs::create_dir_all(&hwmon).unwrap();
+        std::fs::write(hwmon.join("name"), "amdgpu\n").unwrap();
+        std::fs::write(hwmon.join("temp1_input"), "50000\n").unwrap();
+        std::fs::write(hwmon.join("pwm1_enable"), "2\n").unwrap();
+        std::fs::write(hwmon.join("pwm1"), "80\n").unwrap();
+
+        let mut backend = amd_adl::SysfsBackend::with_root(root);
+        let adapters = backend.adapters().unwrap();
+        assert_eq!(adapters.len(), 1);
+        assert_eq!(adapters[0].id, "pci:03:00.0");
+
+        let config_path = root.join("config.json");
+        let mut s = Snapshot {
+            config: Config::default(),
+            adapters: adapters.clone(),
+            selected: None,
+            curve_info: None,
+            sample: None,
+            sampled_at_ms: None,
+            manual: false,
+            error: None,
+            ready: true,
+            applied_speed: None,
+            step_down: StepDown::default(),
+        };
+        select(&mut backend, &mut s).unwrap();
+        s.sample = Some(backend.sample().unwrap());
+
+        handle(Action::Apply, &mut backend, &config_path, &mut s).unwrap();
+        assert!(s.manual);
+        assert_eq!(
+            std::fs::read_to_string(hwmon.join("pwm1_enable"))
+                .unwrap()
+                .trim(),
+            "1"
+        );
+        let expected_speed = requested_speed(&s, s.sample.as_ref().unwrap()).unwrap();
+        let expected_pwm = ((expected_speed * 255 + 50) / 100).to_string();
+        assert_eq!(
+            std::fs::read_to_string(hwmon.join("pwm1")).unwrap().trim(),
+            expected_pwm
+        );
+
+        // External tampering triggers safety restoration.
+        std::fs::write(hwmon.join("pwm1"), "250\n").unwrap();
+        let sample = backend.sample().unwrap();
+        check_sensor_control(&mut backend, &mut s, &sample);
+        assert!(!s.manual);
+        assert_eq!(
+            std::fs::read_to_string(hwmon.join("pwm1_enable"))
+                .unwrap()
+                .trim(),
+            "2"
+        );
+        assert!(s.error.is_some());
+
+        // Startup resume: mismatched PCI ID fails once without retrying.
+        s.config.custom_control_enabled = true;
+        s.config.adapter_id = Some("pci:99:00.0".into());
+        let mut pending = true;
+        resume_custom_control(&mut backend, &config_path, &mut s, &mut pending);
+        assert!(!pending);
+        assert!(!s.manual);
+        assert_eq!(
+            std::fs::read_to_string(hwmon.join("pwm1_enable"))
+                .unwrap()
+                .trim(),
+            "2"
+        );
+
+        // Startup resume: exact saved PCI ID activates manual control and Stop restores automatic.
+        s.config.adapter_id = Some("pci:03:00.0".into());
+        let mut pending = true;
+        resume_custom_control(&mut backend, &config_path, &mut s, &mut pending);
+        assert!(!pending);
+        assert!(s.manual);
+        assert_eq!(
+            std::fs::read_to_string(hwmon.join("pwm1_enable"))
+                .unwrap()
+                .trim(),
+            "1"
+        );
+        assert!(handle(Action::Stop, &mut backend, &config_path, &mut s).unwrap());
+        assert_eq!(
+            std::fs::read_to_string(hwmon.join("pwm1_enable"))
+                .unwrap()
+                .trim(),
+            "2"
+        );
     }
 }
