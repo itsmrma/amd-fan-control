@@ -39,6 +39,7 @@ dependencies = [
  "anyhow",
  "cc",
  "fan-core",
+ "tempfile",
 ]
 
 [[package]]
