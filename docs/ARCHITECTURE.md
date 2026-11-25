@@ -2,9 +2,26 @@
 
 ## Capability discovery
 
-The RX 5600 XT is the development target. The bridge enumerates present AMD adapters, reads `ADL2_Overdrive_Caps`, and deduplicates logical adapters by PCI bus/device/function. The saved ID is a PCI address, not a presumed ADL index. Moving a card to another slot requires selecting it again.
+The RX 5600 XT is the development target on both Windows and Linux.
 
-Control requires `ADL_OD8_FAN_CURVE`, all five temperature/speed ranges, `ADL2_Overdrive8_Setting_Set`, and valid temperature telemetry. Exported functions alone do not establish support. Zero RPM also requires `ADL_OD8_FAN_ZERO_RPM_CONTROL` with a readable 0/1 range.
+### Windows (`amd-adl` / Overdrive8)
+
+The Windows bridge enumerates present AMD adapters, reads `ADL2_Overdrive_Caps`, and deduplicates logical adapters by PCI bus/device/function (`pci:<bus>:<dev>:<fn>`). Control requires `ADL_OD8_FAN_CURVE`, all five temperature/speed ranges, `ADL2_Overdrive8_Setting_Set`, and valid temperature telemetry. Zero RPM also requires `ADL_OD8_FAN_ZERO_RPM_CONTROL` with a readable 0/1 range.
+
+### Linux (`amdgpu` `sysfs`/`hwmon`)
+
+`SysfsBackend` (in `crates/amd-adl/src/linux.rs`) discovers GPUs under `/sys/class/drm/card*/device`, accepting only numeric `cardN` entries (skipping connector subdirectories such as `card0-DP-1`). It verifies the `amdgpu` driver via the `device/driver` symlink or `uevent` (`DRIVER=amdgpu`), resolves a stable PCI address (`pci:<bus>:<dev>.<fn>`, stripping any `0000:` domain prefix), deduplicates by PCI ID, and locates `device/hwmon/hwmon*` (preferring `name == "amdgpu"`).
+
+Moving a card to another PCI slot changes its saved ID and requires selecting it again.
+
+`SysfsBackend::curve_info()` reports:
+- `native_curve_supported = false` (no kernel Overdrive curve-table writes).
+- `host_pwm_supported = true` when both `pwm1_enable` and `pwm1` exist.
+- `writable = true` when both `pwm1_enable` and `pwm1` can be opened for writing.
+- `zero_rpm_supported = true` when `host_pwm_supported` and `pwm1_min` is absent or `0`.
+- `zero_rpm_enabled = true` when `pwm1_enable == 1` and `pwm1 == 0`.
+
+Telemetry reads `temp1_input` (edge) and `temp2_input` (junction/hotspot) in millidegrees Celsius, `fan1_input` (RPM), and `pwm1` (`0..=255` scaled to 0–100%). Missing sensors remain `None`; `Sample::validate()` requires at least one temperature sensor in `1..=125` °C.
 
 ## Ownership and boundaries
 
@@ -14,74 +31,90 @@ flowchart LR
     IPC --> Q[Bounded request channel]
     Q --> W[Rust worker]
     W --> T[GpuBackend trait]
-    T --> R[ADL Rust wrapper]
-    R --> C[C ABI bridge / AMD headers]
-    C --> D[System32 driver DLL]
-    D --> GPU[AMD GPU]
+    T --> WIN[Windows: ADL wrapper / C++ bridge / System32 DLL]
+    T --> LIN[Linux: SysfsBackend / hwmon]
+    WIN --> GPU[AMD GPU]
+    LIN --> GPU
     W --> E[Snapshots / events / tray tooltip]
     E --> UI
 ```
 
-The bridge compiles against unmodified AMD headers pinned to revision `84c881cb2136f04287eb3af12de00a9e2867aa9e`. Fixed C-compatible structures cross the ABI; Rust `Point` uses `repr(C)`. No bindgen or separately installed SDK is required. `LOAD_LIBRARY_SEARCH_SYSTEM32` prevents searching the working directory, PATH, or app directory for the driver DLL.
+One worker thread (`gpu-controller`) owns the `Box<dyn GpuBackend>` instance; `GpuBackend` handles are single-thread (`!Send`/`!Sync`). `Drop` attempts `restore_automatic()` only if this session wrote manual settings. Read-only probes (`list`, `probe`, or opening the GUI without enabling custom control) do not write hardware state or reset other controllers.
 
-One worker thread owns the ADL session; the handle is not `Send`/`Sync`. Drop attempts restoration only if this session wrote a curve. Read-only probes do not reset other controllers. X2 arrays use matching malloc/free. The bridge prefers X2 settings queries with fixed OD8 fallback. Telemetry prefers shared-memory PMLog, falling back to legacy PMLog when support flags are empty. Missing sensors remain absent.
+On Windows, the C++ bridge compiles against unmodified AMD headers pinned to revision `84c881cb2136f04287eb3af12de00a9e2867aa9e` and loads `atiadlxx.dll` with `LOAD_LIBRARY_SEARCH_SYSTEM32`.
+
+On Linux, `SysfsBackend` accepts an injectable `sysfs` root (`SysfsBackend::with_root`) so automated tests exercise real filesystem I/O against temporary `sysfs`/`hwmon` directory trees without internal mocks.
 
 ## Curve execution and Zero RPM
 
-`temperature_source` defaults to `gpu`, including profiles missing the field; alternatives are `hotspot` and `firmware`. GPU/hotspot modes interpolate the saved curve using exactly the selected sensor, on a one-second control clock regardless of the monitoring interval. Missing selected readings are errors; unchanged speed/Zero RPM requests skip writes.
+`temperature_source` defaults to `gpu`, including profiles missing the field; alternatives are `hotspot` and `firmware`. GPU/hotspot modes interpolate the saved curve using exactly the selected sensor, on a one-second control clock (`polling_ms.min(1000)`) regardless of the monitoring interval. Missing selected readings are errors; unchanged `(speed, zero_rpm)` requests skip writes.
 
-`speed_hold_points` positions five OD8 points as high as their driver limits allow, with strictly increasing temperatures. The first four hold the computed speed; the last reaches 100% at the driver's upper curve-temperature limit, capped at 100 °C. Firmware can raise speed in the final ramp, preserving native escalation if the worker terminates. Unsupported ranges fail explicitly. No mapping between the firmware sensor and edge/hotspot is assumed, and no legacy direct-PWM API is used.
+### Windows native OD8 vs Linux host-PWM (`StepDown`)
 
-Firmware mode sends the saved five points directly, retaining the previous driver-selected sensor behavior. All writes request only fan-curve entries and Zero RPM and verify exact readback. Fan-only reset flags preserve unrelated tuning. The chart displays the user's requested curve, not the internal speed-hold points.
+- **Windows (`native_curve_supported = true`)**: `speed_hold_points` positions five OD8 points as high as driver limits allow, holding the computed speed across the first four points with a final ramp to 100% at the driver's maximum curve-temperature limit (capped at 100 °C). **Driver / firmware sensor** (`TemperatureSource::Firmware`) sends the saved five points directly.
+- **Linux (`native_curve_supported = false`, `host_pwm_supported = true`)**: **Driver / firmware sensor** is unavailable in the UI and rejected by both the worker and `fan-cli`. In `gpu` or `hotspot` mode, the worker passes the selected sensor reading through `fan_core::curve::StepDown` (`3.0` °C band, `6` s continuous delay): target temperature rises immediately on heating and steps down only after staying at least `3.0` °C below the held temperature for `6` continuous seconds, preventing audible fan hunting. The interpolated speed is mapped to `pwm1` (`0..=255` via `(percent * 255 + 50) / 100`) and written after setting `pwm1_enable=1`. Every write verifies readback of both `pwm1_enable` and `pwm1`; any mismatch triggers `restore_automatic()` (`pwm1_enable=2`).
 
-Optional `zero_rpm_below_percent` defaults to disabled for older profiles. Core policy inverts the curve at the requested speed, rounding the temperature cutoff down. The first speed must be below the threshold (21–60%), and the cutoff cannot exceed 60 °C. Running curve values remain at least 20% or the higher driver minimum.
+### Zero RPM
 
-The selected sensor drives the gate; firmware mode uses the hotter available reading. Stop permission is requested below cutoff minus 3 °C, retained below the cutoff, and withdrawn at or above it. A fresh sample determines the initial flag. Sensor mode combines speed/flag transitions; firmware mode writes only the flag. Both verify readback. Measured fan percentage is never the control input.
+Optional `zero_rpm_below_percent` defaults to disabled for older profiles. Core policy inverts the curve at the requested speed, rounding the temperature cutoff down. The first speed must be below the threshold (21–60%), and the cutoff cannot exceed 60 °C. Running curve values remain at least 20% (or the higher Windows driver minimum).
 
-Permission does not force physical 0% PWM or configure firmware restart hysteresis. The local RX 5600 XT exposes the toggle but no adjustable stop-temperature range. Actual stop/restart still needs hardware validation. The native curve may use a different internal sensor.
+The selected sensor drives the gate (firmware mode on Windows uses the hotter available reading). Stop permission is requested below `cutoff - 3 °C`, retained below `cutoff`, and withdrawn at or above `cutoff`. Measured fan percentage is never the control input.
 
-## Worker and recovery
+On Linux, requesting Zero RPM writes `pwm1=0` in manual mode (`pwm1_enable=1`) only if `pwm1_min` is absent or `0`. If `pwm1_min > 0`, Zero RPM is marked unsupported and rejected. Writing `pwm1=0` requests fan stop; VBIOS/firmware may still enforce a minimum fan speed or spin-up/down hysteresis. Actual fan stop must be confirmed via `fan1_input` RPM.
 
-The worker sleeps until a request or monotonic deadline. A hidden frontend does not issue hardware polling. Failed readings invalidate telemetry; two consecutive failures attempt restoration. Missing selected sensors in otherwise valid samples stop sensor control immediately. A gap over 15 seconds is treated as resume/stall. Sensor mode checks the last confirmed curve/flag every tick; firmware mode checks every four samples and before flag transitions. The app restores instead of fighting another controller.
+## Worker, coordination, and permission model
 
-Edge ≥90 °C or hotspot ≥105 °C triggers restoration. These are application safeguards, not official AMD operating limits. Failed Zero RPM writes/readback also trigger restoration. A failed restore never reports automatic control as successful.
+The worker sleeps until a request or monotonic deadline. Failed readings invalidate telemetry; two consecutive failures attempt restoration. Missing selected sensors in otherwise valid samples stop sensor control immediately. A gap over 15 seconds is treated as sleep/stall and triggers restoration. External modifications (e.g., `pwm1_enable` or `pwm1` changed outside the app) are detected on tick and trigger restoration rather than fighting another controller.
 
-A named Windows mutex prevents two utility sessions writing the same GPU. It cannot coordinate Afterburner or Radeon tuning. The single-instance plugin prevents duplicate GUIs. Requests use a bounded queue; stalled FFI calls cannot safely be cancelled.
+Edge ≥90 °C or hotspot ≥105 °C triggers restoration. These are application safeguards, not official AMD operating limits. A failed restore never reports automatic control as successful.
+
+### Process coordination (`flock` / mutex)
+
+- **Windows**: A named Windows mutex prevents two `amd-fan-control` / `fan-cli` sessions from writing the same GPU.
+- **Linux**: `SysfsBackend` acquires a non-blocking exclusive `flock` (`LOCK_EX | LOCK_NB`) on `$XDG_RUNTIME_DIR/amd-fan-control/<sanitized_adapter_id>.lock` (falling back to `std::env::temp_dir()`; non-`/sys` test roots use a root-hashed subdirectory in `temp_dir()`). A second process attempting to write the same GPU fails immediately with a lock contention error instead of racing `pwm1`.
+
+The `single-instance` Tauri plugin prevents duplicate GUI windows.
+
+### Linux permission model (`udev`)
+
+Reading `hwmon` temperatures, RPM, and `pwm1` works as an unprivileged user without extra setup. When `pwm1` or `pwm1_enable` is not writable (`writable == false` or `EACCES`/`EPERM`), the GUI remains in read-only monitoring mode and surfaces actionable guidance referencing `60-amd-fan-control.rules`.
+
+Packaged `.deb` and `.rpm` installers deploy [`packaging/linux/60-amd-fan-control.rules`](../packaging/linux/60-amd-fan-control.rules) (`/lib/udev/rules.d/` for `.deb`, `/usr/lib/udev/rules.d/` for `.rpm`) and run `udevadm control --reload-rules` + `udevadm trigger --subsystem-match=hwmon --action=change` via `postinst.sh` / `postrm.sh`. The rule grants `TAG+="uaccess"` and `chgrp video` + `0664` strictly to `pwm1` and `pwm1_enable` on `amdgpu` `hwmon` devices (PCI vendor `0x1002`), leaving clocks, voltages, and power limits untouched.
 
 | Event | Behavior |
 | --- | --- |
 | Close window | Hide to tray; worker continues |
-| Switch custom control off / Use driver defaults | Persist the off choice and request fan-only driver defaults; retain the saved custom curve |
+| Switch custom control off / Use driver defaults | Persist the off choice and request automatic fan control (`pwm1_enable=2` on Linux); retain the saved custom curve |
 | Quit from tray | Restore after custom control; preserve the saved startup choice; failure blocks ordinary exit |
 | Read/write failure | Invalidate telemetry and attempt restoration |
-| Rust unwind | Drop attempts cleanup; no guarantee after abort/access violation |
-| Forced kill/power loss | No cleanup; curve and last Zero RPM flag may remain; gate stops updating |
+| Rust unwind | `Drop` attempts cleanup; no guarantee after abort/access violation |
+| Forced kill / power loss | No cleanup; manual curve / `pwm1_enable=1` may remain while control loop stops |
 | Next launch | If explicitly enabled previously, attempt the saved curve once on the exact saved GPU after fresh telemetry; otherwise monitor only |
 
-No independent watchdog exists. Fan-only reset is not a formal guarantee of autonomous BIOS control on every driver. Firmware retains its own stop/restart conditions if the worker terminates.
+No independent watchdog or privileged `systemd` daemon exists.
 
 ## Configuration and frontend
 
-Configuration validates schema, curve invariants, interval, Zero RPM policy and the GPU ID required for startup restoration. Same-directory temporary files, `sync_all`, and atomic replacement preserve the previous save on failure. Corrupt JSON is preserved and reported. `custom_control_enabled` stores the last explicit switch choice, defaulting to false for old profiles. The runtime `manual` flag remains separate and is true only after a write attempt, retaining its conservative true state if recovery fails.
+Configuration lives at `%APPDATA%\amd-fan-control\config.json` on Windows and `$XDG_CONFIG_HOME/amd-fan-control/config.json` on Linux (via `dirs::config_dir()`). Same-directory temporary files, `sync_all`, and atomic replacement preserve the previous save on failure. Corrupt JSON is preserved and reported.
 
-JSON backup uses the same schema and validation. Export opens a native save dialog from Rust, neutralizes the machine-specific switch choice, and writes atomically. Import reads at most 1 MB, validates the document, and returns it to the frontend as an unsaved draft; it never changes fan control or the saved profile until the user saves.
+JSON backup uses the same schema and validation, neutralizing `custom_control_enabled` on export and capping imports at 1 MB. **Launch at login** delegates to `tauri-plugin-autostart` (Windows Registry Run key / Linux XDG `~/.config/autostart/` `.desktop` entry).
 
-Enabling custom control saves the choice and exact selected GPU only after driver readback succeeds; a failed save triggers restoration. Explicit off saves the preference and always attempts hardware restoration, including on a save error. Normal quit and safety stops do not erase the startup choice. At startup, telemetry errors defer the attempt; once a reading is available, the ordinary activation checks run again against a fresh sample. Missing selected sensors, excessive temperatures, changed GPU identity or driver rejection leave an error and prevent automatic retries in that session. A user command cancels a pending startup attempt. Settings drafts cannot overwrite the switch preference.
+The English frontend uses local fonts, SVG, and system light/dark appearance. On host-PWM-only backends (`!native_curve_supported`), **Driver / firmware sensor** is disabled in the UI. On Linux, Tauri's tray relies on `libayatana-appindicator3-1` (GNOME Shell requires an AppIndicator extension).
 
-The English frontend uses local fonts, SVG, and system light/dark appearance. Settings remain visible below or beside the curve. Desktop layout sizes the chart within the viewport; narrow/short windows retain scrolling for reachable content. ResizeObserver keeps chart coordinates and hit areas in CSS pixels. Dragging captures the pointer on the stable SVG root, preserves grab offset, and suppresses text selection. Keyboard and numeric editing are alternatives. Draft changes are locked during custom control.
+## Updater and packaging pipeline
 
-The custom-control switch follows the worker's confirmed manual state; command failures refresh the snapshot before unlocking controls. Switching off remains available without telemetry or curve capability. Recovery errors describe the operation, the confirmed restoration outcome, and the next action. Driver diagnostics appear under a separate **Technical details** disclosure. ADL -8 on a Zero RPM transition is explained as an unsupported operation; fan-stop write support is not inferred from readable capabilities.
+[`.github/workflows/build.yml`](../.github/workflows/build.yml) runs three jobs:
+1. `core` (`ubuntu-latest`): `cargo fmt --check`, core/CLI/sysfs unit tests, and `glib-security-regression` (verifying the vendored `glib` iterator patch).
+2. `windows` (`windows-latest`): frontend build, `tests/updater-manifest.test.mjs`, Playwright mocked-IPC UI tests, workspace tests, `clippy`, NSIS installer + portable ZIP + `SHA256SUMS.txt`, and build provenance attestation.
+3. `linux` (`ubuntu-22.04` for broad `glibc` compatibility): frontend build, `tests/updater-manifest.test.mjs`, Playwright mocked-IPC UI tests, `cargo fmt --check`, workspace tests (including `SysfsBackend` temp-tree tests and `worker` host-PWM tests), `clippy`, `.deb`/`.rpm`/`.AppImage` bundles, `amd-fan-control-linux-x64-cli.tar.gz`, `SHA256SUMS.txt`, and build provenance attestation.
 
-The frontend has no general filesystem/shell access or remote dependencies. JSON backup uses dedicated Rust commands and native dialogs; the webview only receives the selected configuration or the final path. SVGs are emitted as local files (`assetsInlineLimit: 0`) because the desktop CSP disallows data URLs. Autostart reads OS state through dedicated commands.
+On `v*` tags, the `release` job combines Windows and Linux assets, generates a multi-platform `latest.json` (`windows-x86_64` pointing to the signed NSIS installer, `linux-x86_64` pointing to the signed `.AppImage`), validates it with `scripts/validate-updater-manifest.mjs`, and updates the rolling `updater` GitHub release.
 
-Update checks are user-initiated. The webview dynamically imports the Tauri updater and process plugins, so the normal startup path does not contact GitHub. Rust downloads the NSIS package and verifies its minisign signature against the public key in `src-tauri/tauri.conf.json` before starting the installer; `relaunch()` runs only after a successful install. The manifest lives on the rolling `updater` GitHub release, which keeps a stable URL independent of prerelease tags. Builds are produced only by the release workflow, and the private signing key is available only through Actions secrets.
-
-## Future backends
-
-The hardware trait is independent of Tauri/Windows. Linux sysfs/hwmon is not implemented. `StepDown` remains available for future smoothing or a separate host-PWM backend. Current sensor control uses OD8 speed holds rather than direct PWM.
+Update checks are user-initiated. The `bundle_type` Tauri command inspects `tauri::utils::platform::bundle_type()`: on `.deb` and `.rpm` installs, the frontend skips `plugin-updater` and directs users to GitHub Releases; on Windows NSIS and Linux `.AppImage` installs, Rust verifies the minisign signature against the public key in `src-tauri/tauri.conf.json` before installing and calling `relaunch()`.
 
 ## References
 
 - [Pinned AMD SDK](https://github.com/GPUOpen-LibrariesAndSDKs/display-library/tree/84c881cb2136f04287eb3af12de00a9e2867aa9e)
 - [Overdrive8 example](https://gpuopen-librariesandsdks.github.io/adl/Overdrive8-example.html)
+- [Linux kernel `amdgpu` thermal/fan `hwmon` docs](https://docs.kernel.org/gpu/amdgpu/thermal.html)
 - [Tauri configuration](https://v2.tauri.app/reference/config/), [tray](https://v2.tauri.app/learn/system-tray/), [autostart](https://v2.tauri.app/plugin/autostart/), [updater](https://v2.tauri.app/plugin/updater/), [process](https://v2.tauri.app/plugin/process/)
