@@ -1,7 +1,7 @@
 use anyhow::{bail, Context, Result};
 use fan_core::{
     config::{Config, TemperatureSource},
-    curve::{interpolate, native_points, StepDown},
+    curve::{host_pwm_target_speed, native_points, StepDown},
     hardware::GpuBackend,
 };
 use std::time::{Duration, Instant};
@@ -74,8 +74,7 @@ where
                 bail!("Protective temperature threshold reached");
             }
             let temp = config.temperature_source.temperature(&current_sample)?;
-            let held = step_down.temperature(f64::from(temp), 3.0, Duration::from_secs(6), now);
-            let speed = interpolate(&config.curve, held).ceil() as i32;
+            let speed = host_pwm_target_speed(&config.curve, &mut step_down, temp, now);
             let desired_zero_rpm = config.zero_rpm_requested(&current_sample, active_zero_rpm)?;
             if last_write != Some((speed, desired_zero_rpm)) {
                 backend.apply_speed(speed, desired_zero_rpm)?;

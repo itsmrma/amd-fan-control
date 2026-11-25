@@ -1,7 +1,7 @@
 use anyhow::{bail, Context, Result};
 use fan_core::{
     config::{Config, TemperatureSource},
-    curve::{interpolate, native_points, StepDown},
+    curve::{host_pwm_target_speed, interpolate, native_points, StepDown},
     hardware::{speed_hold_points, Adapter, CurveInfo, GpuBackend, Sample},
 };
 use serde::Serialize;
@@ -212,9 +212,6 @@ fn update_zero_rpm(backend: &mut dyn GpuBackend, s: &mut Snapshot, sample: &Samp
     Ok(())
 }
 
-const HOST_PWM_STEPDOWN_BAND_C: f64 = 3.0;
-const HOST_PWM_STEPDOWN_DELAY: Duration = Duration::from_secs(6);
-
 fn requested_speed(s: &Snapshot, sample: &Sample) -> Result<i32> {
     let temperature = s.config.temperature_source.temperature(sample)?;
     Ok(interpolate(&s.config.curve, f64::from(temperature)).ceil() as i32)
@@ -222,13 +219,12 @@ fn requested_speed(s: &Snapshot, sample: &Sample) -> Result<i32> {
 
 fn requested_host_pwm_speed(s: &mut Snapshot, sample: &Sample, now: Instant) -> Result<i32> {
     let temperature = s.config.temperature_source.temperature(sample)?;
-    let held = s.step_down.temperature(
-        f64::from(temperature),
-        HOST_PWM_STEPDOWN_BAND_C,
-        HOST_PWM_STEPDOWN_DELAY,
+    Ok(host_pwm_target_speed(
+        &s.config.curve,
+        &mut s.step_down,
+        temperature,
         now,
-    );
-    Ok(interpolate(&s.config.curve, held).ceil() as i32)
+    ))
 }
 
 fn update_sensor_control_at(
@@ -469,7 +465,7 @@ fn handle(
                 Ok(info)
             }) {
                 Ok(info) => {
-                    s.applied_speed = speed;
+                    s.applied_speed = speed.map(|v| if zero_rpm { 0 } else { v });
                     s.curve_info = Some(info);
                 }
                 Err(e) => {
@@ -1305,6 +1301,28 @@ mod tests {
             assert!(!s.manual);
             assert_eq!(gpu.resets, 1);
         }
+    }
+
+    #[test]
+    fn host_pwm_apply_with_zero_rpm_skips_redundant_write_on_next_tick() {
+        let mut gpu = HostPwmGpu::new(true);
+        gpu.sample = Sample {
+            edge_c: Some(38),
+            hotspot_c: Some(42),
+            ..Sample::default()
+        };
+        let mut s = host_pwm_snapshot(&gpu, TemperatureSource::Gpu);
+        s.config.curve[0].speed = 20;
+        s.config.zero_rpm_below_percent = Some(25);
+
+        test_request(Action::Apply, &mut gpu, &mut s).unwrap();
+        assert!(s.manual);
+        assert!(s.curve_info.as_ref().unwrap().zero_rpm_enabled);
+        assert_eq!(gpu.speed_writes.len(), 1);
+
+        let sample = gpu.sample.clone();
+        update_sensor_control(&mut gpu, &mut s, &sample).unwrap();
+        assert_eq!(gpu.speed_writes.len(), 1);
     }
 
     #[test]

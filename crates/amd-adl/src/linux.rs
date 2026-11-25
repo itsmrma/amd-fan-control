@@ -44,6 +44,12 @@ fn read_i32(path: &Path) -> Option<i32> {
     read_trimmed(path)?.parse::<i32>().ok()
 }
 
+fn read_pwm_max(hwmon: &Path) -> i32 {
+    read_i32(&hwmon.join("pwm1_max"))
+        .filter(|&max| max > 0)
+        .unwrap_or(255)
+}
+
 fn is_writable(path: &Path) -> bool {
     fs::OpenOptions::new().write(true).open(path).is_ok()
 }
@@ -225,6 +231,19 @@ impl SysfsBackend {
         }
     }
 
+    fn with_lock<T>(&mut self, f: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
+        let had_lock = self
+            .selected
+            .as_ref()
+            .is_some_and(|s| s.lock_file.is_some());
+        self.acquire_lock()?;
+        let res = f(self);
+        if res.is_err() && !had_lock {
+            self.release_lock();
+        }
+        res
+    }
+
     fn verify_owned_state(&self) -> Result<()> {
         let Some(selected) = &self.selected else {
             return Ok(());
@@ -381,9 +400,10 @@ impl GpuBackend for SysfsBackend {
             }
         }
         sample.rpm = read_i32(&hwmon.join("fan1_input")).filter(|&r| r >= 0);
+        let pwm_max = read_pwm_max(hwmon);
         sample.speed_percent = read_i32(&hwmon.join("pwm1"))
-            .filter(|&p| (0..=255).contains(&p))
-            .map(|p| (p * 100 + 127) / 255);
+            .filter(|&p| (0..=pwm_max).contains(&p))
+            .map(|p| ((i64::from(p) * 100 + i64::from(pwm_max) / 2) / i64::from(pwm_max)) as i32);
         sample.validate()?;
         Ok(sample)
     }
@@ -393,6 +413,9 @@ impl GpuBackend for SysfsBackend {
     }
 
     fn apply_speed(&mut self, percent: i32, zero_rpm: bool) -> Result<()> {
+        if self.sample()?.too_hot() {
+            bail!("Protective temperature threshold reached");
+        }
         if zero_rpm {
             return self.set_pwm(0);
         }
@@ -416,20 +439,13 @@ impl GpuBackend for SysfsBackend {
             bail!("This GPU/driver does not support Zero RPM (pwm1_min > 0)");
         }
         self.verify_owned_state()?;
-        let had_lock = self
-            .selected
-            .as_ref()
-            .is_some_and(|s| s.lock_file.is_some());
-        self.acquire_lock()?;
-        let target_pwm = ((u32::from(percent) * 255 + 50) / 100) as i32;
-        if let Err(e) = fs::write(&pwm1_enable, "1")
-            .with_context(|| format!("Writing manual mode to {}", pwm1_enable.display()))
-        {
-            if !had_lock {
-                self.release_lock();
-            }
-            return Err(e);
-        }
+        let pwm_max = read_pwm_max(&hwmon);
+        let target_pwm = ((i64::from(percent) * i64::from(pwm_max) + 50) / 100)
+            .clamp(0, i64::from(pwm_max)) as i32;
+        self.with_lock(|_| {
+            fs::write(&pwm1_enable, "1")
+                .with_context(|| format!("Writing manual mode to {}", pwm1_enable.display()))
+        })?;
         if let Some(selected) = &mut self.selected {
             selected.owns_manual = true;
             selected.expected_pwm = None;
@@ -461,13 +477,8 @@ impl GpuBackend for SysfsBackend {
 
     fn restore_automatic(&mut self) -> Result<()> {
         let hwmon = self.hwmon_path()?.to_path_buf();
-        let had_lock = self
-            .selected
-            .as_ref()
-            .is_some_and(|s| s.lock_file.is_some());
-        self.acquire_lock()?;
         let pwm1_enable = hwmon.join("pwm1_enable");
-        let res = (|| -> Result<()> {
+        self.with_lock(|_| {
             fs::write(&pwm1_enable, "2").with_context(|| {
                 format!("Restoring automatic mode in {}", pwm1_enable.display())
             })?;
@@ -475,13 +486,7 @@ impl GpuBackend for SysfsBackend {
                 bail!("Driver did not retain automatic PWM mode (pwm1_enable=2)");
             }
             Ok(())
-        })();
-        if let Err(e) = res {
-            if !had_lock {
-                self.release_lock();
-            }
-            return Err(e);
-        }
+        })?;
         if let Some(selected) = &mut self.selected {
             selected.owns_manual = false;
             selected.expected_pwm = None;
@@ -1074,5 +1079,81 @@ mod tests {
             has_perm_denied,
             "expected PermissionDenied in error chain, got: {err:#}"
         );
+    }
+
+    #[test]
+    fn respects_custom_pwm1_max_and_defaults_invalid_or_zero_to_255() {
+        let dir = tempfile::tempdir().unwrap();
+        let pci_dev = create_fake_card(
+            dir.path(),
+            FakeCard {
+                card_name: "card0",
+                pci_slot: "0000:03:00.0",
+                vendor: "0x1002",
+                driver: "amdgpu",
+                product_name: None,
+                device_id: None,
+            },
+        );
+        let hwmon = pci_dev.join("hwmon/hwmon0");
+        fs::create_dir_all(&hwmon).unwrap();
+        fs::write(hwmon.join("name"), "amdgpu\n").unwrap();
+        fs::write(hwmon.join("temp1_input"), "45000\n").unwrap();
+        fs::write(hwmon.join("pwm1_enable"), "2\n").unwrap();
+        fs::write(hwmon.join("pwm1_max"), "1000\n").unwrap();
+        fs::write(hwmon.join("pwm1"), "500\n").unwrap();
+
+        let mut backend = SysfsBackend::with_root(dir.path());
+        let adapters = backend.adapters().unwrap();
+        backend.select(&adapters[0]).unwrap();
+
+        assert_eq!(backend.sample().unwrap().speed_percent, Some(50));
+        backend.apply_speed(40, false).unwrap();
+        assert_eq!(read_i32(&hwmon.join("pwm1")), Some(400));
+        assert_eq!(backend.sample().unwrap().speed_percent, Some(40));
+        backend.restore_automatic().unwrap();
+
+        // Zero or invalid pwm1_max falls back to 255.
+        fs::write(hwmon.join("pwm1_max"), "0\n").unwrap();
+        fs::write(hwmon.join("pwm1"), "128\n").unwrap();
+        assert_eq!(backend.sample().unwrap().speed_percent, Some(50));
+        backend.apply_speed(50, false).unwrap();
+        assert_eq!(read_i32(&hwmon.join("pwm1")), Some(128));
+        backend.restore_automatic().unwrap();
+
+        fs::write(hwmon.join("pwm1_max"), "not_a_number\n").unwrap();
+        backend.apply_speed(100, false).unwrap();
+        assert_eq!(read_i32(&hwmon.join("pwm1")), Some(255));
+        backend.restore_automatic().unwrap();
+    }
+
+    #[test]
+    fn apply_speed_rejects_too_hot_without_writing_pwm1() {
+        let dir = tempfile::tempdir().unwrap();
+        let pci_dev = create_fake_card(
+            dir.path(),
+            FakeCard {
+                card_name: "card0",
+                pci_slot: "0000:03:00.0",
+                vendor: "0x1002",
+                driver: "amdgpu",
+                product_name: None,
+                device_id: None,
+            },
+        );
+        let hwmon = pci_dev.join("hwmon/hwmon0");
+        fs::create_dir_all(&hwmon).unwrap();
+        fs::write(hwmon.join("name"), "amdgpu\n").unwrap();
+        fs::write(hwmon.join("temp1_input"), "95000\n").unwrap();
+        fs::write(hwmon.join("pwm1_enable"), "2\n").unwrap();
+        fs::write(hwmon.join("pwm1"), "80\n").unwrap();
+
+        let mut backend = SysfsBackend::with_root(dir.path());
+        let adapters = backend.adapters().unwrap();
+        backend.select(&adapters[0]).unwrap();
+
+        assert!(backend.apply_speed(50, false).is_err());
+        assert_eq!(read_i32(&hwmon.join("pwm1_enable")), Some(2));
+        assert_eq!(read_i32(&hwmon.join("pwm1")), Some(80));
     }
 }
