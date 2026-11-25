@@ -40,6 +40,7 @@ test.beforeEach(async ({ page }) => {
       s.sampled_at_ms = Date.now();
       if (name === 'get_status') return structuredClone(s);
       if (name === 'autostart_enabled') return false;
+      if (name === 'bundle_type') return window.bundleType ?? null;
       if (window.commandDelay) await new Promise(resolve => setTimeout(resolve, window.commandDelay));
       if (name === 'export_config') {
         if (window.exportError) throw window.exportError;
@@ -435,3 +436,19 @@ test('permission-denied error shows actionable udev guidance and tucks OS error 
   await page.getByText('Technical details', { exact: true }).click();
   await expect(page.locator('#error-detail-text')).toContainText('Permission denied (os error 13)');
 });
+
+for (const pkg of ['deb', 'rpm']) {
+  test(`package-managed Linux install (.${pkg}) shows release package guidance instead of running in-place updater`, async ({ page }) => {
+    await page.route('**/node_modules/.vite/deps/@tauri-apps_plugin-updater.js*', route => route.fulfill({
+      contentType: 'text/javascript',
+      body: 'export const check=async()=>{throw new Error("internal updater should not be called");};',
+    }));
+    await page.evaluate(bundleType => { window.bundleType = bundleType; }, pkg);
+    await page.getByRole('button', { name: 'Check for updates' }).click();
+    await expect(page.locator('#update-status')).toBeVisible();
+    await expect(page.locator('#update-status')).toContainText(`.${pkg}`);
+    await expect(page.locator('#update-status')).toContainText('release package');
+    await expect(page.locator('#update-status')).not.toContainText('Could not check for updates');
+    await expect(page.getByRole('button', { name: 'Check for updates' })).toBeEnabled();
+  });
+}
