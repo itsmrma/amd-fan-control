@@ -65,7 +65,7 @@ fn find_hwmon_dir(device_path: &Path) -> Result<PathBuf> {
         let Some(name_str) = name.to_str() else {
             continue;
         };
-        if name_str.starts_with("hwmon") && entry.path().is_dir() {
+        if name_str.starts_with("hwmon") && entry.metadata().is_ok_and(|meta| meta.is_dir()) {
             dirs.push(entry.path());
         }
     }
@@ -158,10 +158,19 @@ impl SysfsBackend {
 
     fn lock_path(&self, adapter_id: &str) -> PathBuf {
         let dir = if self.root == Path::new("/sys") {
-            std::env::var_os("XDG_RUNTIME_DIR")
-                .map(PathBuf::from)
-                .unwrap_or_else(std::env::temp_dir)
-                .join("amd-fan-control")
+            use std::os::unix::fs::MetadataExt;
+            let uid = fs::metadata("/proc/self").map(|m| m.uid()).ok();
+            match uid {
+                Some(uid) => {
+                    let run_user = PathBuf::from(format!("/run/user/{uid}"));
+                    if run_user.is_dir() {
+                        run_user.join("amd-fan-control")
+                    } else {
+                        std::env::temp_dir().join(format!("amd-fan-control-{uid}"))
+                    }
+                }
+                None => std::env::temp_dir().join("amd-fan-control"),
+            }
         } else {
             let canonical = fs::canonicalize(&self.root).unwrap_or_else(|_| self.root.clone());
             let mut hasher = DefaultHasher::new();

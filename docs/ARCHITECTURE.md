@@ -71,7 +71,7 @@ Edge ≥90 °C or hotspot ≥105 °C triggers restoration. These are application
 ### Process coordination (`flock` / mutex)
 
 - **Windows**: A named Windows mutex prevents two `amd-fan-control` / `fan-cli` sessions from writing the same GPU.
-- **Linux**: `SysfsBackend` acquires a non-blocking exclusive `flock` (`LOCK_EX | LOCK_NB`) on `$XDG_RUNTIME_DIR/amd-fan-control/<sanitized_adapter_id>.lock` (falling back to `std::env::temp_dir()`; non-`/sys` test roots use a root-hashed subdirectory in `temp_dir()`). A second process attempting to write the same GPU fails immediately with a lock contention error instead of racing `pwm1`.
+- **Linux**: `SysfsBackend` acquires a non-blocking exclusive `flock` (`LOCK_EX | LOCK_NB`) on `/run/user/<uid>/amd-fan-control/<sanitized_adapter_id>.lock` (falling back to `std::env::temp_dir()/amd-fan-control-<uid>`; non-`/sys` test roots use a root-hashed subdirectory in `temp_dir()`). A second process attempting to write the same GPU fails immediately with a lock contention error instead of racing `pwm1`.
 
 The `single-instance` Tauri plugin prevents duplicate GUI windows.
 
