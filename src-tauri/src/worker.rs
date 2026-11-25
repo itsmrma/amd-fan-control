@@ -26,6 +26,8 @@ pub struct Snapshot {
     pub manual: bool,
     pub error: Option<String>,
     pub ready: bool,
+    #[serde(skip)]
+    applied_speed: Option<i32>,
 }
 
 pub enum Action {
@@ -63,6 +65,7 @@ impl Worker {
             manual: false,
             error,
             ready: false,
+            applied_speed: None,
         }));
         let (sender, receiver) = mpsc::sync_channel(8);
         let shared = snapshot.clone();
@@ -147,6 +150,7 @@ fn select(backend: &mut dyn GpuBackend, s: &mut Snapshot) -> Result<()> {
 fn restore(backend: &mut dyn GpuBackend, s: &mut Snapshot) -> Result<()> {
     backend.restore_automatic()?;
     s.manual = false;
+    s.applied_speed = None;
     s.curve_info = Some(backend.curve_info()?);
     Ok(())
 }
@@ -219,21 +223,37 @@ fn update_sensor_control(
         .as_ref()
         .context("Fan control state unavailable")?;
     let actual = backend.curve_info()?;
-    if actual.current != expected.current || actual.zero_rpm_enabled != expected.zero_rpm_enabled {
+    if actual.zero_rpm_enabled != expected.zero_rpm_enabled
+        || (actual.native_curve_supported && actual.current != expected.current)
+    {
         bail!("Fan settings changed outside this app");
     }
     let speed = requested_speed(s, sample)?;
-    let points = speed_hold_points(&actual, speed)?;
     let zero_rpm = s
         .config
         .zero_rpm_requested(sample, actual.zero_rpm_enabled)?;
-    if actual.current != points || actual.zero_rpm_enabled != zero_rpm {
-        backend.apply_speed(speed, zero_rpm)?;
-        let info = backend.curve_info()?;
-        if info.current != points || info.zero_rpm_enabled != zero_rpm {
-            bail!("Driver did not retain the requested sensor-based fan settings");
+    if actual.native_curve_supported {
+        let points = speed_hold_points(&actual, speed)?;
+        if actual.current != points || actual.zero_rpm_enabled != zero_rpm {
+            backend.apply_speed(speed, zero_rpm)?;
+            let info = backend.curve_info()?;
+            if info.current != points || info.zero_rpm_enabled != zero_rpm {
+                bail!("Driver did not retain the requested sensor-based fan settings");
+            }
+            s.curve_info = Some(info);
         }
-        s.curve_info = Some(info);
+    } else if actual.host_pwm_supported {
+        if s.applied_speed != Some(speed) || actual.zero_rpm_enabled != zero_rpm {
+            backend.apply_speed(speed, zero_rpm)?;
+            let info = backend.curve_info()?;
+            if info.zero_rpm_enabled != zero_rpm {
+                bail!("Driver did not retain the requested sensor-based fan settings");
+            }
+            s.applied_speed = Some(speed);
+            s.curve_info = Some(info);
+        }
+    } else {
+        bail!("Sensor-based fan control is not supported by this GPU/driver");
     }
     Ok(())
 }
@@ -351,16 +371,28 @@ fn handle(
             if sample.too_hot() {
                 bail!("GPU is too hot to start custom fan control");
             }
-            let speed = if s.config.temperature_source == TemperatureSource::Firmware {
-                None
-            } else {
-                Some(requested_speed(s, &sample)?)
-            };
-            let expected = if let Some(speed) = speed {
-                speed_hold_points(&backend.curve_info()?, speed)?
-            } else {
-                points
-            };
+            let current_info = backend.curve_info()?;
+            if !current_info.writable {
+                bail!("Fan control is read-only; write permissions are required to apply a curve");
+            }
+            let (speed, expected_points) =
+                if s.config.temperature_source == TemperatureSource::Firmware {
+                    if !current_info.native_curve_supported {
+                        bail!("Driver / firmware sensor is not supported by this GPU/driver");
+                    }
+                    (None, Some(points))
+                } else {
+                    if !current_info.host_pwm_supported {
+                        bail!("Sensor-based fan control is not supported by this GPU/driver");
+                    }
+                    let speed = requested_speed(s, &sample)?;
+                    let expected = if current_info.native_curve_supported {
+                        Some(speed_hold_points(&current_info, speed)?)
+                    } else {
+                        None
+                    };
+                    (Some(speed), expected)
+                };
             let zero_rpm = s.config.zero_rpm_requested(&sample, false)?;
             s.manual = true;
             let result = if let Some(speed) = speed {
@@ -369,12 +401,17 @@ fn handle(
                 backend.apply_native_curve(&points, zero_rpm)
             };
             match result.and_then(|_| backend.curve_info()).and_then(|info| {
-                if info.current != expected || info.zero_rpm_enabled != zero_rpm {
+                if expected_points.is_some_and(|expected| info.current != expected)
+                    || info.zero_rpm_enabled != zero_rpm
+                {
                     bail!("Driver did not retain the requested fan settings");
                 }
                 Ok(info)
             }) {
-                Ok(info) => s.curve_info = Some(info),
+                Ok(info) => {
+                    s.applied_speed = speed;
+                    s.curve_info = Some(info);
+                }
                 Err(e) => {
                     bail!(
                         "{}",
@@ -566,6 +603,9 @@ mod tests {
         fn curve_info(&mut self) -> Result<CurveInfo> {
             Ok(CurveInfo {
                 supported: true,
+                native_curve_supported: true,
+                host_pwm_supported: true,
+                writable: true,
                 zero_rpm_supported: true,
                 zero_rpm_enabled: false,
 
@@ -605,7 +645,7 @@ mod tests {
             index: 0,
             id: "pci:41:0:0".into(),
             name: "Test GPU".into(),
-            od_version: 8,
+            od_version: Some(8),
         };
         Snapshot {
             config: Config {
@@ -623,6 +663,7 @@ mod tests {
             manual: false,
             error: None,
             ready: true,
+            applied_speed: None,
         }
     }
     fn test_request(action: Action, gpu: &mut dyn GpuBackend, s: &mut Snapshot) -> Result<bool> {
@@ -1082,5 +1123,176 @@ mod tests {
         assert!(handle(Action::Save(modified), &mut gpu, &path, &mut s).is_err());
         assert_eq!(Config::load(&path).unwrap().polling_ms, 2500);
         assert!(s.manual);
+    }
+
+    struct HostPwmGpu {
+        info: CurveInfo,
+        sample: Sample,
+        speed_writes: Vec<(i32, bool)>,
+        resets: usize,
+    }
+    impl HostPwmGpu {
+        fn new(writable: bool) -> Self {
+            Self {
+                info: CurveInfo {
+                    supported: true,
+                    native_curve_supported: false,
+                    host_pwm_supported: true,
+                    writable,
+                    zero_rpm_supported: true,
+                    zero_rpm_enabled: false,
+                    current: [Point::default(); 5],
+                    minimum: [Point {
+                        temperature: 20,
+                        speed: 20,
+                    }; 5],
+                    maximum: [Point {
+                        temperature: 100,
+                        speed: 100,
+                    }; 5],
+                },
+                sample: Sample {
+                    edge_c: Some(50),
+                    hotspot_c: Some(70),
+                    ..Sample::default()
+                },
+                speed_writes: vec![],
+                resets: 0,
+            }
+        }
+    }
+    impl GpuBackend for HostPwmGpu {
+        fn adapters(&mut self) -> Result<Vec<Adapter>> {
+            Ok(vec![])
+        }
+        fn select(&mut self, _: &Adapter) -> Result<()> {
+            Ok(())
+        }
+        fn curve_info(&mut self) -> Result<CurveInfo> {
+            Ok(self.info.clone())
+        }
+        fn sample(&mut self) -> Result<Sample> {
+            Ok(self.sample.clone())
+        }
+        fn apply_native_curve(&mut self, _: &[Point; 5], _: bool) -> Result<()> {
+            bail!("native firmware curve is not supported on host-PWM backend");
+        }
+        fn apply_speed(&mut self, percent: i32, zero_rpm: bool) -> Result<()> {
+            self.speed_writes.push((percent, zero_rpm));
+            self.info.zero_rpm_enabled = zero_rpm;
+            Ok(())
+        }
+        fn restore_automatic(&mut self) -> Result<()> {
+            self.resets += 1;
+            self.info.zero_rpm_enabled = false;
+            Ok(())
+        }
+    }
+
+    fn host_pwm_snapshot(gpu: &HostPwmGpu, source: TemperatureSource) -> Snapshot {
+        let mut s = snapshot();
+        s.selected.as_mut().unwrap().od_version = None;
+        s.config.temperature_source = source;
+        s.config.zero_rpm_below_percent = None;
+        s.curve_info = Some(gpu.info.clone());
+        s.sample = Some(gpu.sample.clone());
+        s
+    }
+
+    #[test]
+    fn host_pwm_only_backend_controls_speed_without_od8_points() {
+        for (source, expected_speed) in [
+            (TemperatureSource::Gpu, 40),
+            (TemperatureSource::Hotspot, 70),
+        ] {
+            let mut gpu = HostPwmGpu::new(true);
+            let mut s = host_pwm_snapshot(&gpu, source);
+            test_request(Action::Apply, &mut gpu, &mut s).unwrap();
+            assert!(s.manual);
+            assert_eq!(gpu.speed_writes, vec![(expected_speed, false)]);
+
+            // Unchanged sample skips redundant writes.
+            let sample = gpu.sample.clone();
+            update_sensor_control(&mut gpu, &mut s, &sample).unwrap();
+            assert_eq!(gpu.speed_writes.len(), 1);
+
+            // Warmer sample updates speed without calling speed_hold_points.
+            let warmer = Sample {
+                edge_c: Some(65),
+                hotspot_c: Some(75),
+                ..Sample::default()
+            };
+            update_sensor_control(&mut gpu, &mut s, &warmer).unwrap();
+            let next_speed = if source == TemperatureSource::Gpu {
+                60
+            } else {
+                80
+            };
+            assert_eq!(
+                gpu.speed_writes,
+                vec![(expected_speed, false), (next_speed, false)]
+            );
+
+            // External zero_rpm change is detected.
+            gpu.info.zero_rpm_enabled = true;
+            assert!(update_sensor_control(&mut gpu, &mut s, &warmer).is_err());
+
+            test_request(Action::Automatic, &mut gpu, &mut s).unwrap();
+            assert!(!s.manual);
+            assert_eq!(gpu.resets, 1);
+        }
+    }
+
+    #[test]
+    fn host_pwm_only_backend_rejects_firmware_sensor_without_substitution() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        let mut gpu = HostPwmGpu::new(true);
+        let mut s = host_pwm_snapshot(&gpu, TemperatureSource::Firmware);
+
+        let err = handle(Action::Apply, &mut gpu, &path, &mut s).unwrap_err();
+        assert!(err.to_string().contains("Driver / firmware sensor"));
+        assert!(!s.manual);
+        assert!(gpu.speed_writes.is_empty());
+
+        // Startup resume must also reject Firmware mode without substituting a sensor.
+        s.config.custom_control_enabled = true;
+        s.config.adapter_id = Some(s.selected.as_ref().unwrap().id.clone());
+        s.config.save(&path).unwrap();
+        let mut pending = true;
+        resume_custom_control(&mut gpu, &path, &mut s, &mut pending);
+        assert!(!pending);
+        assert!(!s.manual);
+        assert!(s.error.as_ref().unwrap().starts_with("Could not resume"));
+        assert!(s
+            .error
+            .as_ref()
+            .unwrap()
+            .contains("Driver / firmware sensor"));
+        assert!(gpu.speed_writes.is_empty());
+    }
+
+    #[test]
+    fn read_only_backend_rejects_apply_and_resume_while_keeping_telemetry() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        let mut gpu = HostPwmGpu::new(false);
+        let mut s = host_pwm_snapshot(&gpu, TemperatureSource::Gpu);
+
+        let err = handle(Action::Apply, &mut gpu, &path, &mut s).unwrap_err();
+        assert!(err.to_string().contains("read-only"));
+        assert!(!s.manual);
+        assert!(s.sample.is_some());
+        assert!(gpu.speed_writes.is_empty());
+
+        s.config.custom_control_enabled = true;
+        s.config.adapter_id = Some(s.selected.as_ref().unwrap().id.clone());
+        s.config.save(&path).unwrap();
+        let mut pending = true;
+        resume_custom_control(&mut gpu, &path, &mut s, &mut pending);
+        assert!(!pending);
+        assert!(!s.manual);
+        assert!(s.error.as_ref().unwrap().contains("read-only"));
+        assert!(gpu.speed_writes.is_empty());
     }
 }

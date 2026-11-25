@@ -344,3 +344,50 @@ test('the legend explains the cutoff and buttons expose hover help', async ({ pa
   await page.getByRole('checkbox', { name: 'Allow fans to stop' }).uncheck();
   await expect(page.locator('#zero-legend')).toBeHidden();
 });
+
+test('uses OS-neutral login copy and omits Overdrive when inapplicable', async ({ page }) => {
+  await expect(page.getByRole('checkbox', { name: 'Launch at login' })).toBeVisible();
+  await expect(page.locator('body')).not.toContainText('Launch with Windows');
+  await page.evaluate(() => {
+    window.gpu.selected = { id: 'pci:03:00.0', name: 'AMD Radeon RX 7800 XT', od_version: null };
+    window.gpu.adapters = [window.gpu.selected];
+    window.emitStatus();
+  });
+  await expect(page.locator('#gpu-name')).toHaveText('AMD Radeon RX 7800 XT');
+  await expect(page.locator('#gpu-name')).not.toContainText('Overdrive');
+});
+
+test('host-PWM-only backend disables Driver / firmware sensor with explanatory help', async ({ page }) => {
+  await page.evaluate(() => {
+    window.gpu.curve_info = {
+      ...window.gpu.curve_info,
+      supported: true,
+      native_curve_supported: false,
+      host_pwm_supported: true,
+      writable: true,
+    };
+    window.emitStatus();
+  });
+  const firmwareOption = page.locator('#temperature-source option[value="firmware"]');
+  await expect(firmwareOption).toBeDisabled();
+  await expect(page.locator('#sensor-help')).toContainText('unavailable');
+  await expect(page.getByRole('switch')).toBeEnabled();
+});
+
+test('read-only permission state blocks control writes while keeping telemetry and backup export usable', async ({ page }) => {
+  await page.evaluate(() => {
+    window.gpu.curve_info = {
+      ...window.gpu.curve_info,
+      supported: true,
+      native_curve_supported: false,
+      host_pwm_supported: true,
+      writable: false,
+    };
+    window.emitStatus();
+  });
+  await expect(page.locator('#mode')).toHaveText('Read-only');
+  await expect(page.getByRole('switch')).toBeDisabled();
+  await expect(page.locator('#control-help')).toContainText('read-only');
+  await expect(page.locator('#edge')).toContainText('38');
+  await expect(page.getByRole('button', { name: 'Export settings…' })).toBeEnabled();
+});
