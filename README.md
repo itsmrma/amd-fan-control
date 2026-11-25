@@ -92,7 +92,11 @@ sudo udevadm control --reload-rules
 sudo udevadm trigger --subsystem-match=hwmon --action=change
 ```
 
-This rule grants local active-session write access (`TAG+="uaccess"`, plus `video` group `0664`) **strictly** to `pwm1` and `pwm1_enable` on `amdgpu` `hwmon` devices (PCI vendor `0x1002`). Clocks, voltages, and power limits are not exposed. If your session does not use `systemd-logind` `uaccess` ACLs, ensure your user is in the `video` group and log out/in.
+This rule sets `video` group ownership (`0664`) **strictly** on `pwm1` and `pwm1_enable` for `amdgpu` `hwmon` devices (PCI vendor `0x1002`). Clocks, voltages, and power limits are not exposed. Because `systemd-logind` `uaccess` ACLs only apply to `/dev` device nodes and not `/sys` attributes, make sure your user is in the `video` group (especially on Fedora and similar distros where desktop users are not in `video` by default), then log out and back in:
+
+```bash
+sudo usermod -aG video "$USER"
+```
 
 #### Linux tray expectations (GNOME)
 
