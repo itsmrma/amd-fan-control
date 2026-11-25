@@ -79,7 +79,15 @@ Download from [Releases](https://github.com/itsmrma/amd-fan-control/releases):
 Without write permissions on `hwmon` PWM nodes, the app opens cleanly in **read-only monitoring mode** (temperatures, RPM, and backup export still work). To allow fan-speed writes without running the GUI as root, install [`packaging/linux/60-amd-fan-control.rules`](packaging/linux/60-amd-fan-control.rules) (also bundled inside `amd-fan-control-linux-x64-cli.tar.gz`):
 
 ```bash
-sudo cp 60-amd-fan-control.rules /etc/udev/rules.d/60-amd-fan-control.rules
+# From a cloned repository:
+sudo cp packaging/linux/60-amd-fan-control.rules /etc/udev/rules.d/60-amd-fan-control.rules
+
+# Or from an extracted amd-fan-control-linux-x64-cli.tar.gz directory:
+# sudo cp amd-fan-control-linux-x64-cli/60-amd-fan-control.rules /etc/udev/rules.d/60-amd-fan-control.rules
+
+# Or download directly if you only downloaded the .AppImage:
+# curl -fsSL https://raw.githubusercontent.com/itsmrma/amd-fan-control/main/packaging/linux/60-amd-fan-control.rules | sudo tee /etc/udev/rules.d/60-amd-fan-control.rules >/dev/null
+
 sudo udevadm control --reload-rules
 sudo udevadm trigger --subsystem-match=hwmon --action=change
 ```
