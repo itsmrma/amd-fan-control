@@ -198,5 +198,8 @@ jobs:
           # 404 to every installed client.
           gh release view updater --json tagName,assets --jq '.tagName as $t | .assets[] | select(.name=="latest.json") | "latest.json on \($t)"'
       - name: No-op for non-release refs
-        if: !startsWith(github.ref, 'refs/tags/')
+        # The expression must be wrapped in ${{ }}: a bare `!startsWith(...)`
+        # starts with a YAML tag indicator, which makes the whole workflow
+        # file fail to parse, so no jobs (and no required checks) ever run.
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
         run: echo "Not a release tag — skipping publish steps."
