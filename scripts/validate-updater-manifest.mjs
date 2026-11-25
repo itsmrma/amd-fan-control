@@ -1,6 +1,3 @@
-import { readFileSync } from 'node:fs';
-import { pathToFileURL } from 'node:url';
-
 const PLATFORM_SUFFIXES = {
   'windows-x86_64': '-setup.exe',
   'linux-x86_64': '.AppImage',
@@ -49,20 +46,4 @@ export function validateUpdaterManifest(manifest, expectedVersion) {
   }
 
   return manifest;
-}
-
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const [manifestPath, expectedVersion] = process.argv.slice(2);
-  if (!manifestPath) {
-    console.error('Usage: node scripts/validate-updater-manifest.mjs <manifest-path> [expected-version]');
-    process.exit(1);
-  }
-  try {
-    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
-    validateUpdaterManifest(manifest, expectedVersion);
-    console.log(`Validated updater manifest v${manifest.version} (${Object.keys(PLATFORM_SUFFIXES).join(', ')})`);
-  } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error));
-    process.exit(1);
-  }
 }

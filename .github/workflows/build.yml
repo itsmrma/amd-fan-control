@@ -288,7 +288,13 @@ jobs:
               }
             }' \
             > release/latest.json
-          node scripts/validate-updater-manifest.mjs release/latest.json "$version"
+          node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            import { validateUpdaterManifest } from "./scripts/validate-updater-manifest.mjs";
+            const manifest = JSON.parse(readFileSync(0, "utf8"));
+            validateUpdaterManifest(manifest, process.argv[1]);
+            console.log(`Validated updater manifest v${manifest.version}`);
+          ' "$version" < release/latest.json
           hash="$(sha256sum release/latest.json | awk '{print $1}')"
           printf '%s  latest.json\n' "$hash" >> release/SHA256SUMS.txt
       - name: Publish alpha assets
@@ -339,7 +345,13 @@ jobs:
           version="${GITHUB_REF_NAME#v}"
           verify_dir="$(mktemp -d)"
           gh release download updater --pattern latest.json --dir "$verify_dir" --clobber
-          node scripts/validate-updater-manifest.mjs "$verify_dir/latest.json" "$version"
+          node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            import { validateUpdaterManifest } from "./scripts/validate-updater-manifest.mjs";
+            const manifest = JSON.parse(readFileSync(0, "utf8"));
+            validateUpdaterManifest(manifest, process.argv[1]);
+            console.log(`Validated updater manifest v${manifest.version}`);
+          ' "$version" < "$verify_dir/latest.json"
           rm -rf "$verify_dir"
       - name: No-op for non-release refs
         # The expression must be wrapped in ${{ }}: a bare `!startsWith(...)`

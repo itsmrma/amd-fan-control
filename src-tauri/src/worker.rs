@@ -1419,6 +1419,7 @@ mod tests {
     }
 
     #[cfg(target_os = "linux")]
+    #[cfg(target_os = "linux")]
     #[test]
     fn sysfs_worker_applies_curve_restores_on_tampering_and_resumes_exact_pci_id() {
         use std::os::unix::fs::symlink;
@@ -1532,6 +1533,7 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn sysfs_worker_zero_rpm_uses_selected_sensor_hysteresis_and_thermal_safety() {
         let dir = tempfile::tempdir().unwrap();
@@ -1649,6 +1651,7 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn sysfs_worker_recovers_and_reports_clear_error_when_zero_rpm_rejected_or_support_lost() {
         let dir = tempfile::tempdir().unwrap();
@@ -1732,6 +1735,7 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn sysfs_worker_reports_actionable_udev_message_on_readonly_and_permission_denied() {
         use std::os::unix::fs::PermissionsExt;
